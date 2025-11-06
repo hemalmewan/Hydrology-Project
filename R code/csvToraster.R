@@ -1,7 +1,7 @@
 library(terra)
 
 # Read data
-rain <- read.csv("C:/UOC pdf/4th Year/DS 4007-Research/sptiao_tempo/rainFallTrend/Rainfall Input/drf_1951_new2.csv")
+rain <- read.csv("C:/UOC pdf/4th Year/DS 4007-Research/sptiao_tempo/rainFallTrend/Rainfall Input/drf_1953_new2.csv")
 
 # Extract coordinates
 coords <- rain[, c("lon", "lat")]
@@ -22,7 +22,7 @@ for (i in 4:ncol(rain)) {
   r_rain <- rasterize(pts, r_template, field = "rainfall", fun = mean)
   
   # Save raster
-  filename <- paste0("C:/UOC pdf/4th Year/DS 4007-Research/sptiao_tempo/rainFallTrend/Rainfall Input/rainfall_1951_day_tif/rainfall_1951_day_", i - 3, ".tif")
+  filename <- paste0("C:/UOC pdf/4th Year/DS 4007-Research/sptiao_tempo/rainFallTrend/Rainfall Input/rainfall_1953_day_tif/rainfall_1953_day_", i - 3, ".tif")
   writeRaster(r_rain, filename, overwrite = TRUE)
   
   cat("Saved:", filename, "\n")
