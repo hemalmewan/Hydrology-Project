@@ -1,4 +1,4 @@
-##import library
+ ##import library
 library(terra)
 
 ##url(path) for the nc file in 1951 daily precipitation 
