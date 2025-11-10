@@ -1,3 +1,5 @@
+##CDD indices
+
 ##import required libraries
 library(terra)
 
@@ -47,6 +49,19 @@ file_name <- paste0(save_url, "CDD_1951.tif")
 writeRaster(CDD_raster, file_name, overwrite = TRUE)
 
 cat("Saved:", file_name, "\n")
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 ##plot raster file
 

@@ -1,3 +1,5 @@
+##PRCPTOT indices
+
 ##import required libraries
 library(terra)
 library(zoo)
@@ -50,6 +52,9 @@ for(month in 1:12){
   
   cat("Saved:", file_name, "\n")
 }
+
+
+
 
 ##plot these 12 raster files
 
