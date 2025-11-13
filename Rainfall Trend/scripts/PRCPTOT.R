@@ -15,7 +15,7 @@ url<-"C:/UOC pdf/4th Year/DS 4007-Research/sptiao_tempo/Hydrology-Project/Rainfa
 ##path of the csv file 
 url_1<-"C:/UOC pdf/4th Year/DS 4007-Research/sptiao_tempo/Hydrology-Project/Rainfall Input/drf_1951_new2.csv"
 ##save output url
-save_url<-"C:/UOC pdf/4th Year/DS 4007-Research/sptiao_tempo/Hydrology-Project/Rainfall Input/PRCPTOT_1951/"
+save_url<-"C:/Hydrology-Project/Rainfall Trend/indices/PRCPTOT_1951"
 
 
 r<-rast(url) ##convert raster object
@@ -63,6 +63,7 @@ tif.files<-list.files(save_url,pattern = "\\.tif$",full.names = TRUE)
 # Extract month number from file names
 months <- as.numeric(gsub(".*_(\\d+)\\.tif$", "\\1", basename(tif.files)))
 
+
 # Order files by month number
 tif.files <- tif.files[order(months)]
 
@@ -80,4 +81,4 @@ for (month in 1:12) {
   
 }
 
-par(mfrow=c(1,1))
+

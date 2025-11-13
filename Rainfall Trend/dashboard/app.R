@@ -51,7 +51,7 @@ ui <- dashboardPage(
               selectInput("station", "Station ID:", choices = NULL)
           ),
           box(width = 8, title ="Monthly Time Series Plot",
-              plotOutput("timeseries_plot", height ="350px"))
+              plotOutput("timeseries_plot", height ="350px")) 
         ),
         fluidRow(
           box(width = 12, title ="Monthly Precipitation Distribution",
@@ -63,23 +63,38 @@ ui <- dashboardPage(
       tabItem(
         tabName = "climate_indice",
         fluidRow(
-          box(width = 4, title = "Select Climate Index", status = "primary", solidHeader = TRUE,
-              selectInput("climate_index", "Climate Index:",
-                          choices = c("PRCPTOT", "CDD", "RxDday")),
-              
-              uiOutput("index_parameters"),
-              uiOutput("index_month_selector"),
-              actionButton("compute_index", "Compute Index", icon = icon("cogs")),
-              downloadButton("download_index", "Download Result")
+          
+          ####--------------------------LEFT COLUMN---------------------------------------------
+          column(
+             width =4,
+             box(width = 12, title = "Select Climate Index", status = "primary", solidHeader = TRUE,
+                 selectInput("climate_index", "Climate Index:",
+                             choices = c("PRCPTOT", "CDD", "RxDday","Rnnmm")),
+                 
+                 uiOutput("index_parameters"),
+                 uiOutput("index_month_selector"),
+                 actionButton("compute_index", "Compute Index", icon = icon("cogs")),
+                 downloadButton("download_index", "Download Result")
+             ),
+             # NEW: Separate box for description (outside and below)
+             box(width = 12, title = "Description", status = "info", solidHeader = TRUE,
+                 htmlOutput("index_description"))
           ),
-          box(width = 8, title = "Climate Index Result", status = "success", solidHeader = TRUE,
-              plotOutput("index_plot", height = "600px")
-          )
+         ####-------------------------RIGHT COLUMN----------------------------------------
+         column(
+           width = 8,
+           # NEW: Separate box for description (outside and below)
+           box(width = 12, title = "Climate Index Result", status = "success", solidHeader = TRUE,
+               plotOutput("index_plot", height = "600px"))
+           
+         )
         )
-      )
-    )
+       
+       )
+     )
   )
 )
+
 
 server <- function(input, output, session) {
   
@@ -143,17 +158,27 @@ server <- function(input, output, session) {
     req(r_monthly(), pts(), stations())
     
     vals <- extract(r_monthly(), pts()) ##return location ID and monthly columns
-    vals <- vals[,-1] ##remove ID col
+    
+    if (nrow(vals) == 0) {
+      return(data.frame(StationID = character(0), Month = as.Date(character(0)), Rain = numeric(0)))
+    }
+    
+    vals <- vals[,-1,drop=FALSE] ##remove ID col
+    
+    # check row counts match
+    if (nrow(vals) != nrow(stations())) {
+      stop("Mismatch between extracted raster points and station coordinates.")
+    }
     
     df <- cbind(StationID = stations()$station_id, vals)
     
     df_long <- reshape::melt(df, id.vars = "StationID", variable.names = "Month", value.name = "Rain")
     
-    # Clean Month column:
-    df_long$Month <- as.character(df_long$Month)
+    # clean month names
     df_long$Month <- gsub("^X", "", df_long$Month)
     df_long$Month <- gsub("\\.", "-", df_long$Month)
     df_long$Month <- as.Date(paste0(df_long$Month, "-01"), format = "%Y-%m-%d")
+    
     
     df_long
   })
@@ -162,6 +187,7 @@ server <- function(input, output, session) {
   output$timeseries_plot <- renderPlot({
     req(input$station)
     df <- monthly_values()[monthly_values()$StationID == input$station,]
+    validate(need(nrow(df) > 0, "No data available for the selected station."))
     
     plot(df$Month, df$Rain, type = "o", pch = 16, col = "blue",
          xlab = "Month", ylab = "Rainfall (mm)",
@@ -203,13 +229,56 @@ server <- function(input, output, session) {
       tm_layout(legend.outside = TRUE)
   })
   
+  ###-----------------------------------Description of the each climate indices------------------------
+  output$index_description <- renderUI({
+    req(input$climate_index)
+    
+    if (input$climate_index == "PRCPTOT") {
+      HTML("<b>PRCPTOT (Total Precipitation):</b><br>
+          <ul>
+            <li><b>Description:</b> Total monthly precipitation, summing all daily rainfall amounts above a chosen threshold (e.g., 1 mm).</li>
+            <li><b>Purpose:</b> Measures total wetness and overall rainfall accumulation in a month.</li>
+            <li><b>Parameter:</b> <i>Threshold (mm)</i> — minimum daily rainfall included in the total.</li>
+            <li><b>Interpretation:</b> Higher values indicate wetter months.</li>
+          </ul>")
+      
+    } else if (input$climate_index == "CDD") {
+      HTML("<b>CDD (Consecutive Dry Days):</b><br>
+          <ul>
+            <li><b>Description:</b> Maximum number of consecutive days within the period where daily precipitation is below the threshold (e.g., &lt;1 mm).</li>
+            <li><b>Purpose:</b> Identifies the length of dry spells or drought events.</li>
+            <li><b>Parameter:</b> <i>Threshold (mm)</i> — defines what counts as a 'dry' day.</li>
+            <li><b>Interpretation:</b> Higher values represent longer dry periods.</li>
+          </ul>")
+      
+    } else if (input$climate_index == "RxDday") {
+      HTML("<b>RxDday (Maximum X-Day Rainfall):</b><br>
+          <ul>
+            <li><b>Description:</b> Maximum total precipitation accumulated over a rolling window of X consecutive days within a month.</li>
+            <li><b>Purpose:</b> Captures short-term rainfall intensity and extreme rainfall events.</li>
+            <li><b>Parameter:</b> <i>Rolling Window (days)</i> — number of consecutive days used for summing rainfall.</li>
+            <li><b>Interpretation:</b> Larger values indicate stronger extreme rainfall episodes.</li>
+          </ul>")
+      
+    } else if (input$climate_index == "Rnnmm") {
+      HTML("<b>Rnnmm (Number of Heavy Rain Days):</b><br>
+          <ul>
+            <li><b>Description:</b> Number of days with precipitation exceeding a user-defined threshold (e.g., &gt;20 mm).</li>
+            <li><b>Purpose:</b> Quantifies the frequency of heavy rainfall days.</li>
+            <li><b>Parameter:</b> <i>Threshold (mm)</i> — rainfall amount used to define a 'heavy' day.</li>
+            <li><b>Interpretation:</b> Higher values mean more frequent heavy rainfall events.</li>
+          </ul>")
+    }
+  })
+  
+  
   ###------------------------------------Climate Indices------------------------
   output$index_parameters <- renderUI({
     req(input$climate_index)
     
     if (input$climate_index == "RxDday") {
       numericInput("rolling_window", "Rolling Window (days):", value = 5, min = 1, max = 10)
-    } else if (input$climate_index %in% c("PRCPTOT", "CDD")) {
+    } else if (input$climate_index %in% c("PRCPTOT", "CDD","Rnnmm")) {
       numericInput("threshold", "Threshold (mm):", value = 1, min = 0, max = 200)
     }
   })
@@ -328,6 +397,50 @@ server <- function(input, output, session) {
       
     }
     
+    ##-----------------------------Rnnmm--------------------------------
+    else if(input$climate_index=="Rnnmm"){
+      req(input$threshold)
+      threshold <- as.numeric(input$threshold)
+      
+      ##define the user define function for climate indices Rnnmm
+      Rnnmm<-function(daily_precip,threshold){
+        no_days<-sum(daily_precip>threshold)
+        return(no_days)
+      }
+      
+      ##loo[ through all the months Jan-Dec]
+      for (month in unique_months) {
+        ##define end date and start date for each month
+        monthly_index<-which(month_group==month)
+        
+        ##Daily precipitation data for each month
+        monthly_precipitation<-r[[monthly_index]]
+        
+        ##Daily precipitation data in each month each location
+        vals<-extract(monthly_precipitation,points)
+        vals_mat<-as.matrix(vals[,-1,drop=FALSE]) ##remove ID column
+        
+        monthly_days<-apply(vals_mat,1,Rnnmm,threshold=threshold)
+        
+        ##Attach the result as points
+        points$Rnnmm<-monthly_days
+        
+        ##create the raster layers
+        templete<-monthly_precipitation[[1]]
+        Rnnmm_raster<-rasterize(points,templete,field="Rnnmm")
+        
+       
+        names(Rnnmm_raster)<-month
+        result_list[[month]]<-Rnnmm_raster
+        
+      }
+      
+      Rnnmm_stack <- rast(result_list)
+      names(Rnnmm_stack) <- unique_months
+      return(Rnnmm_stack)
+      
+    }
+    
   })
   
   ###---------------------------------------Month Selector for Indices-------------------------------
@@ -342,16 +455,32 @@ server <- function(input, output, session) {
     req(indices_calculate(), input$selected_index_month)
     r_stack <- indices_calculate()
     month_name <- input$selected_index_month
-    rolling_window<-input$rolling_window
+    
+    # Clean the month name (remove "X" and replace "." with "-")
+    month_clean <- gsub("^X", "", month_name)
+    month_clean <- gsub("\\.", "-", month_clean)
+    
+    # Convert safely to Date, suppressing harmless warnings
+    pretty_month <- suppressWarnings(format(as.Date(paste0(month_clean, "-01"), "%Y-%m-%d"), "%B %Y"))
+    
+    roll_window<-input$rolling_window
+    threshold<-input$threshold
     
     if(input$climate_index=="PRCPTOT"){
-      plot(r_stack[[month_name]], main = paste("PRCPTOT -", month_name))
+      plot(r_stack[[month_name]], main = paste("PRCPTOT -", pretty_month),
+           legend.args = list(text = "Monthly Total Rainfall (mm)", side = 4, line = 2))
     }
     else if(input$climate_index=="CDD"){
-      plot(r_stack[[month_name]], main = paste("CDD -", month_name))
+      plot(r_stack[[month_name]], main = paste("CDD -", pretty_month),
+           legend.args = list(text = "Consecutive Dry Days (days)", side = 4, line = 2))
     }
     else if(input$climate_index=="RxDday"){
-      plot(r_stack[[month_name]], main = paste0("Rx",rolling_window,"day -", month_name))
+      plot(r_stack[[month_name]], main = paste0("Rx", roll_window, "day - ", pretty_month),
+           legend.args = list(text = paste0("Max ", roll_window, "-Day Rainfall (mm)"), side = 4, line = 2))
+    }
+    else if(input$climate_index=="Rnnmm"){
+      plot(r_stack[[month_name]], main = paste0("R", threshold, "mm - ", pretty_month),
+           legend.args = list(text = paste0("Days > ", threshold, " mm"), side = 4, line = 2))
     }
     
   })

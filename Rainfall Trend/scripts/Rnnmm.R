@@ -1,44 +1,38 @@
-##Rxdday indices
-
+##Rnnmm indices
 
 ##import required libraries
 library(terra)
-library(zoo)
-
-
-##get the user input 
-paste("Enter the Required d value:",d<-as.integer(readline()))
-print(d)
-
-##validate the range of the d value it should be between 1 to 10
-if(d<1 | d>10){
-  print("Error!!,d must be between 1 and 10")
-  
-}
-
 
 ##path of the nc file
-url<-"C:/UOC pdf/4th Year/DS 4007-Research/sptiao_tempo/Hydrology-Project/Rainfall Input/NCDF/rainfall_1951_daily.nc"
+url<-"C:/Hydrology-Project/Rainfall Trend/NCDF/rainfall_1951_daily.nc"
 ##path of the csv file 
-url_1<-"C:/UOC pdf/4th Year/DS 4007-Research/sptiao_tempo/Hydrology-Project/Rainfall Input/drf_1951_new2.csv"
+url_1<-"C:/Hydrology-Project/Rainfall Trend/CSV files/drf_1951_new2.csv"
 ##save output url
-save_url<-"C:/Hydrology-Project/Rainfall Trend/indices/Rx1day_1951/"
+save_url<-"C:/Hydrology-Project/Rainfall Trend/indices/Rnnmm/"
 
 
 r<-rast(url) ##convert raster object
 dates<-as.Date(time(r)) ##time range 1951-01-01 to 1951-12-31
 
 
-
 points<-read.csv(url_1) ##read csv file 
 pts<-vect(points,geom=c("lon","lat"),crs=crs(r)) ##convert the lat lon as the spatial locations
 
 
-##loop through all the months January to December
+# Define threshold for dry day
+dry_threshold <- 10  # mm
+
+##define the user define function for climate indics Rnnmm
+Rnnmm<-function(daily_precip,threshold){
+  no_days<-sum(daily_precip>threshold)
+  return(no_days)
+}
+
+
+##loo[ through all the months Jan-Dec]
 for (month in 1:12) {
   ##define end date and start date for each month
   monthly_index<-which(format(dates,"%m")==sprintf("%02d",month))
-  
   
   ##Daily precipitation data for each month
   monthly_precipitation<-r[[monthly_index]]
@@ -47,30 +41,20 @@ for (month in 1:12) {
   vals<-extract(monthly_precipitation,pts)
   vals_mat<-as.matrix(vals[,-1,drop=FALSE]) ##remove ID column
   
-  
-  ## Compute the rolling window days
-  if(ncol(vals_mat) >= d){
-    roll_sum <- apply(vals_mat, 1, function(x) rollapply(x, width = d, FUN = sum, align = "left", na.rm = TRUE))
-    roll_sum <- as.matrix(roll_sum)
-    monthly_Rxdday <- apply(roll_sum, 2, max, na.rm = TRUE)
-  }else{
-    monthly_Rxdday <- rep(NA, nrow(vals))
-  }
-  
+  monthly_days<-apply(vals_mat,1,Rnnmm,threshold=dry_threshold)
   
   ##Attach the result as points
-  pts$Rxdday<-monthly_Rxdday
+  pts$Rnnmm<-monthly_days
   
   ##create the raster layers
   templete<-monthly_precipitation[[1]]
-  Rxdday_raster<-rasterize(pts,templete,field="Rxdday")
+  Rnnmm_raster<-rasterize(pts,templete,field="Rnnmm")
   
   ##Save raster
-  file_name<-paste0(save_url,"Rx",d,"day_1951_",sprintf("%02d",month),".tif")
-  writeRaster(Rxdday_raster,file_name,overwrite=TRUE)
+  file_name<-paste0(save_url,"R",dry_threshold,"mm_1951_",sprintf("%02d",month),".tif")
+  writeRaster(Rnnmm_raster,file_name,overwrite=TRUE)
   
 }
-
 
 
 ##plot these 12 raster files
@@ -86,7 +70,7 @@ months <- as.numeric(gsub(".*_(\\d+)\\.tif$", "\\1", basename(tif.files)))
 # Order files by month number
 tif.files <- tif.files[order(months)]
 
- 
+
 ##Load them as a SpatRaster files
 rasters<-lapply(tif.files,rast)
 
@@ -107,15 +91,10 @@ month_names <- month.abb
 
 for (i in 1:12) {
   plot(rasters[[i]], col = viridis(30), zlim = val_range,
-       main = paste("Rx1day (1951) -", month_names[i]),
+       main = paste0("R",dry_threshold,"mm(1951)-", month_names[i]),
        axes = FALSE, box = FALSE)
 }
 
-mtext("Monthly Maximum 1-Day Rainfall (Rx1day) — Year 1951",
+mtext("Monthly R",dry_threshold,"nn— Year 1951",
       outer = TRUE, cex = 1.5, font = 2)
-
-
-
-
-
 

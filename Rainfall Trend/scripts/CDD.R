@@ -8,7 +8,7 @@ url<-"C:/UOC pdf/4th Year/DS 4007-Research/sptiao_tempo/Hydrology-Project/Rainfa
 ##path of the csv file 
 url_1<-"C:/UOC pdf/4th Year/DS 4007-Research/sptiao_tempo/Hydrology-Project/Rainfall Input/drf_1951_new2.csv"
 ##save output url
-save_url<-"C:/UOC pdf/4th Year/DS 4007-Research/sptiao_tempo/Hydrology-Project/Rainfall Input/CDD/"
+save_url<-"C:/Hydrology-Project/Rainfall Trend/indices/CDD_1951"
 
 
 r<-rast(url) ##convert raster object
@@ -67,6 +67,7 @@ cat("Saved:", file_name, "\n")
 
 tif.files<-list.files(save_url,pattern = "\\.tif$",full.names = TRUE)
 
+
 # Extract month number from file names
 months <- as.numeric(gsub(".*_(\\d+)\\.tif$", "\\1", basename(tif.files)))
 
@@ -78,9 +79,13 @@ rasters<-lapply(tif.files,rast)
 
 rasters<-rast(rasters)
 
+rasters
+
 # Plot with scientific color scale
 plot(rasters, 
      main = "Consecutive Dry Days (CDD) – 1951",
      col = hcl.colors(30, "YlOrRd"))
   
+
+rasters
 
