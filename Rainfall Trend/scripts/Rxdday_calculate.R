@@ -18,16 +18,15 @@ if(d<1 | d>10){
 
 
 ##path of the nc file
-url<-"C:/UOC pdf/4th Year/DS 4007-Research/sptiao_tempo/Hydrology-Project/Rainfall Input/NCDF/rainfall_1951_daily.nc"
+url<-"C:/Hydrology-Project/Rainfall Trend/NCDF/rainfall_1951_daily.nc"
 ##path of the csv file 
-url_1<-"C:/UOC pdf/4th Year/DS 4007-Research/sptiao_tempo/Hydrology-Project/Rainfall Input/drf_1951_new2.csv"
+url_1<-"C:/Hydrology-Project/Rainfall Trend/CSV files/drf_1951_new2.csv"
 ##save output url
 save_url<-"C:/Hydrology-Project/Rainfall Trend/indices/Rx1day_1951/"
 
 
 r<-rast(url) ##convert raster object
 dates<-as.Date(time(r)) ##time range 1951-01-01 to 1951-12-31
-
 
 
 points<-read.csv(url_1) ##read csv file 
@@ -74,14 +73,10 @@ for (month in 1:12) {
 
 
 ##plot these 12 raster files
-
 tif.files<-list.files(save_url,pattern = "\\.tif$",full.names = TRUE)
-
 
 # Extract month number from file names
 months <- as.numeric(gsub(".*_(\\d+)\\.tif$", "\\1", basename(tif.files)))
-
-
 
 # Order files by month number
 tif.files <- tif.files[order(months)]

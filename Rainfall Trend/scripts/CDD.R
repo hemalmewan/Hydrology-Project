@@ -4,11 +4,11 @@
 library(terra)
 
 ##path of the nc file
-url<-"C:/UOC pdf/4th Year/DS 4007-Research/sptiao_tempo/Hydrology-Project/Rainfall Input/NCDF/rainfall_1951_daily.nc"
+url<-"C:/Hydrology-Project/Rainfall Trend/NCDF/rainfall_1951_daily.nc"
 ##path of the csv file 
-url_1<-"C:/UOC pdf/4th Year/DS 4007-Research/sptiao_tempo/Hydrology-Project/Rainfall Input/drf_1951_new2.csv"
+url_1<-"C:/Hydrology-Project/Rainfall Trend/CSV files/drf_1951_new2.csv"
 ##save output url
-save_url<-"C:/Hydrology-Project/Rainfall Trend/indices/CDD_1951"
+save_url<-"C:/Hydrology-Project/Rainfall Trend/indices/CDD_1951/"
 
 
 r<-rast(url) ##convert raster object
@@ -51,22 +51,9 @@ writeRaster(CDD_raster, file_name, overwrite = TRUE)
 cat("Saved:", file_name, "\n")
 
 
-
-
-
-
-
-
-
-
-
-
-
-
 ##plot raster file
 
 tif.files<-list.files(save_url,pattern = "\\.tif$",full.names = TRUE)
-
 
 # Extract month number from file names
 months <- as.numeric(gsub(".*_(\\d+)\\.tif$", "\\1", basename(tif.files)))
@@ -87,5 +74,5 @@ plot(rasters,
      col = hcl.colors(30, "YlOrRd"))
   
 
-rasters
+
 

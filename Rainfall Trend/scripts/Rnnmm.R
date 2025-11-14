@@ -61,11 +61,8 @@ for (month in 1:12) {
 
 tif.files<-list.files(save_url,pattern = "\\.tif$",full.names = TRUE)
 
-
 # Extract month number from file names
 months <- as.numeric(gsub(".*_(\\d+)\\.tif$", "\\1", basename(tif.files)))
-
-
 
 # Order files by month number
 tif.files <- tif.files[order(months)]
@@ -76,6 +73,7 @@ rasters<-lapply(tif.files,rast)
 
 rasters
 rasters<-rast(rasters)
+
 
 library(terra)
 library(viridis)
@@ -94,7 +92,6 @@ for (i in 1:12) {
        main = paste0("R",dry_threshold,"mm(1951)-", month_names[i]),
        axes = FALSE, box = FALSE)
 }
-
 mtext("Monthly R",dry_threshold,"nn— Year 1951",
       outer = TRUE, cex = 1.5, font = 2)
 
