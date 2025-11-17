@@ -1,33 +1,42 @@
 library(terra)
 
-# List all daily raster files
-files <- list.files("C:/Hydrology-Project/Rainfall Trend/yearly-rasters/rainfall_1951_day_tif", pattern = "\\.tif$", full.names = TRUE)
+# Loop through all years 1951 to 1981
+for (year in 1951:1981) {
+  
+  # Define raster folder
+  folder <- paste0("C:/Hydrology-Project/Rainfall Trend/yearly-rasters/rainfall_", year, "_day_tif/")
+  
+  # List all daily raster files
+  files <- list.files(folder, pattern = "\\.tif$", full.names = TRUE)
+  
+  # Extract numeric day index
+  day_numbers <- as.numeric(gsub(".*day_([0-9]+)\\.tif$", "\\1", basename(files)))
+  
+  # Order files numerically
+  files <- files[order(day_numbers)]
+  
+  # Read all rasters as a SpatRaster
+  r_stack <- rast(files)
+  
+  # Create correct date sequence
+  dates <- seq(as.Date(paste0(year, "-01-01")), as.Date(paste0(year, "-12-31")), by="day")
+  
+  # Write NetCDF — include time here, not in SpatRaster
+  out_nc <- paste0("C:/Hydrology-Project/Rainfall Trend/NCDF/rainfall_", year, "_daily.nc")
+  
+  writeCDF(r_stack,
+           filename = out_nc,
+           overwrite = TRUE,
+           varname = "precip_day",
+           unit = "mm/day",
+           longname = "Daily precipitation",
+           time = dates,         # ⬅️ correct way to add time!
+           compression = 4)
+  
+  cat("Created NetCDF for year:", year, "\n")
+}
 
-# Extract numeric day index from filenames
-day_numbers <- as.numeric(gsub(".*day_([0-9]+)\\.tif$", "\\1", basename(files)))
-
-
-# Order files numerically
-files <- files[order(day_numbers)]
-
-# Read them as a SpatRaster stack (one layer per day)
-r_stack <- rast(files)
-
-##assign actual dates
-dates <- seq(as.Date("1951-01-01"), as.Date("1951-12-31"), by = "day")
-time(r_stack) <- dates
-
-
-# Write to NetCDF
-writeCDF(r_stack, 
-         filename = "C:/Hydrology-Project/Rainfall Trend/NCDF/rainfall_1951_daily.nc",
-         overwrite = TRUE,
-         varname = "precip_day",
-         unit = "mm/day",
-         longname = "Daily precipitation",
-         compression = 4)
-
-cat("NetCDF file created successfully!\n")
+cat("All NetCDF files created successfully!\n")
 
 
 
