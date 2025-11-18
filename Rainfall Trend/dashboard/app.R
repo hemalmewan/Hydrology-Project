@@ -29,7 +29,6 @@ ui <- dashboardPage(
   
   dashboardBody(
     tabItems(
-      
       #---- TAB 1: Raster Viewer ----
       tabItem(
         tabName = "raster",
@@ -59,39 +58,31 @@ ui <- dashboardPage(
         )
       ),
       
-      ##------------------------Climate Indices------------------------
+      #---- TAB 3: Climate Indices ----
       tabItem(
         tabName = "climate_indice",
         fluidRow(
-          
-          ####--------------------------LEFT COLUMN---------------------------------------------
           column(
-             width =4,
-             box(width = 12, title = "Select Climate Index", status = "primary", solidHeader = TRUE,
-                 selectInput("climate_index", "Climate Index:",
-                             choices = c("PRCPTOT", "CDD", "RxDday","Rnnmm")),
-                 
-                 uiOutput("index_parameters"),
-                 uiOutput("index_month_selector"),
-                 actionButton("compute_index", "Compute Index", icon = icon("cogs")),
-                 downloadButton("download_index", "Download Result")
-             ),
-             # NEW: Separate box for description (outside and below)
-             box(width = 12, title = "Description", status = "info", solidHeader = TRUE,
-                 htmlOutput("index_description"))
+            width =4,
+            box(width = 12, title = "Select Climate Index", status = "primary", solidHeader = TRUE,
+                selectInput("climate_index", "Climate Index:",
+                            choices = c("PRCPTOT", "CDD", "RxDday","Rnnmm","CWD","R95p","R99p","R95pTOT","R99pTOT")),
+                uiOutput("index_parameters"),
+                uiOutput("index_month_selector"),
+                actionButton("compute_index", "Compute Index", icon = icon("cogs")),
+                downloadButton("download_index", "Download Result")
+            ),
+            box(width = 12, title = "Description", status = "info", solidHeader = TRUE,
+                htmlOutput("index_description"))
           ),
-         ####-------------------------RIGHT COLUMN----------------------------------------
-         column(
-           width = 8,
-           # NEW: Separate box for description (outside and below)
-           box(width = 12, title = "Climate Index Result", status = "success", solidHeader = TRUE,
-               plotOutput("index_plot", height = "600px"))
-           
-         )
+          column(
+            width = 8,
+            box(width = 12, title = "Climate Index Result", status = "success", solidHeader = TRUE,
+                tmapOutput("index_map", height = "600px"))
+          )
         )
-       
-       )
-     )
+      )
+    )
   )
 )
 
@@ -104,7 +95,7 @@ server <- function(input, output, session) {
     rast(input$ncfile$datapath)
   })
   
-  ##------------------------Load csv----------------------------
+  ##------------------------Load CSV----------------------------
   stations <- reactive({
     req(input$stationfile)
     read.csv(input$stationfile$datapath)
@@ -121,15 +112,18 @@ server <- function(input, output, session) {
   })
   
   ##-----------------------------Meta Data of the raster files-----------------------
-  output$meta <- renderPrint({
-    req(r_daily())
-    r_daily() ##display meta data
-  })
-  
-  ##--------------------------------Extract dates----------------------------------------------
   daily_dates <- reactive({
     req(r_daily())
-    as.Date(time(r_daily())) ##time range Jan 01 to Dec 31
+    n <- nlyr(r_daily())         # number of layers
+    start_date <- as.Date("1951-01-01")
+    seq(start_date, by = "day", length.out = n)
+  })
+  
+  output$meta <- renderPrint({
+    req(r_daily())
+    dates <- daily_dates()
+    names(r_daily()) <- as.character(dates)
+    r_daily() ## display raster meta
   })
   
   ##------------------------------------Aggregate to Monthly (Sum)--------------------------------
@@ -158,28 +152,16 @@ server <- function(input, output, session) {
     req(r_monthly(), pts(), stations())
     
     vals <- extract(r_monthly(), pts()) ##return location ID and monthly columns
-    
-    if (nrow(vals) == 0) {
-      return(data.frame(StationID = character(0), Month = as.Date(character(0)), Rain = numeric(0)))
-    }
+    if (nrow(vals) == 0) return(data.frame(StationID = character(0), Month = as.Date(character(0)), Rain = numeric(0)))
     
     vals <- vals[,-1,drop=FALSE] ##remove ID col
-    
-    # check row counts match
-    if (nrow(vals) != nrow(stations())) {
-      stop("Mismatch between extracted raster points and station coordinates.")
-    }
-    
     df <- cbind(StationID = stations()$station_id, vals)
-    
     df_long <- reshape::melt(df, id.vars = "StationID", variable.names = "Month", value.name = "Rain")
     
     # clean month names
     df_long$Month <- gsub("^X", "", df_long$Month)
     df_long$Month <- gsub("\\.", "-", df_long$Month)
     df_long$Month <- as.Date(paste0(df_long$Month, "-01"), format = "%Y-%m-%d")
-    
-    
     df_long
   })
   
@@ -198,22 +180,21 @@ server <- function(input, output, session) {
   output$date_or_month_selector <- renderUI({
     req(r_daily())
     if (input$viewType == "daily") {
-      selectInput("selected_day", "Select Date:", choices = as.character(daily_dates()))
+      selectInput("selected_day", "Select Date:", choices = format(daily_dates(), "%Y-%m-%d"))
     } else {
       selectInput("selected_month", "Select Month:", choices = month_labels())
     }
   })
   
-  ##-----------------------------------------Render Map (tmap v4 syntax)-------------------------------
+  ##-----------------------------------------Render Map-------------------------------
   output$map <- renderTmap({
     req(r_daily())
     
     if (input$viewType == "daily") {
       req(input$selected_day)
-      idx <- which(as.character(daily_dates()) == input$selected_day)
+      idx <- which(format(daily_dates(), "%Y-%m-%d") == input$selected_day)
       r_show <- r_daily()[[idx]]
       title_txt <- paste("Daily Rainfall:", input$selected_day)
-      
     } else {
       req(input$selected_month)
       ym <- names(month_labels())[month_labels() == input$selected_month]
@@ -222,63 +203,73 @@ server <- function(input, output, session) {
     }
     
     tm_shape(r_show) +
-      tm_raster(
-        col.scale = tm_scale(values = "-Spectral"),
-        col.legend = tm_legend(title = title_txt)
-      ) +
+      tm_raster(col.scale = tm_scale(values = "-Spectral"),
+                col.legend = tm_legend(title = title_txt)) +
       tm_layout(legend.outside = TRUE)
   })
   
-  ###-----------------------------------Description of the each climate indices------------------------
+  ###-----------------------------------Description of each climate index------------------------
   output$index_description <- renderUI({
     req(input$climate_index)
     
-    if (input$climate_index == "PRCPTOT") {
-      HTML("<b>PRCPTOT (Total Precipitation):</b><br>
-          <ul>
-            <li><b>Description:</b> Total monthly precipitation, summing all daily rainfall amounts above a chosen threshold (e.g., 1 mm).</li>
-            <li><b>Purpose:</b> Measures total wetness and overall rainfall accumulation in a month.</li>
-            <li><b>Parameter:</b> <i>Threshold (mm)</i> — minimum daily rainfall included in the total.</li>
-            <li><b>Interpretation:</b> Higher values indicate wetter months.</li>
-          </ul>")
-      
-    } else if (input$climate_index == "CDD") {
-      HTML("<b>CDD (Consecutive Dry Days):</b><br>
-          <ul>
-            <li><b>Description:</b> Maximum number of consecutive days within the period where daily precipitation is below the threshold (e.g., &lt;1 mm).</li>
-            <li><b>Purpose:</b> Identifies the length of dry spells or drought events.</li>
-            <li><b>Parameter:</b> <i>Threshold (mm)</i> — defines what counts as a 'dry' day.</li>
-            <li><b>Interpretation:</b> Higher values represent longer dry periods.</li>
-          </ul>")
-      
-    } else if (input$climate_index == "RxDday") {
-      HTML("<b>RxDday (Maximum X-Day Rainfall):</b><br>
-          <ul>
-            <li><b>Description:</b> Maximum total precipitation accumulated over a rolling window of X consecutive days within a month.</li>
-            <li><b>Purpose:</b> Captures short-term rainfall intensity and extreme rainfall events.</li>
-            <li><b>Parameter:</b> <i>Rolling Window (days)</i> — number of consecutive days used for summing rainfall.</li>
-            <li><b>Interpretation:</b> Larger values indicate stronger extreme rainfall episodes.</li>
-          </ul>")
-      
-    } else if (input$climate_index == "Rnnmm") {
-      HTML("<b>Rnnmm (Number of Heavy Rain Days):</b><br>
-          <ul>
-            <li><b>Description:</b> Number of days with precipitation exceeding a user-defined threshold (e.g., &gt;20 mm).</li>
-            <li><b>Purpose:</b> Quantifies the frequency of heavy rainfall days.</li>
-            <li><b>Parameter:</b> <i>Threshold (mm)</i> — rainfall amount used to define a 'heavy' day.</li>
-            <li><b>Interpretation:</b> Higher values mean more frequent heavy rainfall events.</li>
-          </ul>")
-    }
+    desc <- switch(input$climate_index,
+                   
+                   "PRCPTOT" = "<b>PRCPTOT – Total Wet-Day Precipitation</b><br>
+                 Total precipitation accumulated over all wet days (≥ 1 mm) within each month.
+                 This index reflects the overall monthly rainfall input.",
+                   
+                   "CDD" = "<b>CDD – Consecutive Dry Days</b><br>
+             Maximum number of consecutive days with rainfall < 1 mm.
+             CDD indicates the duration of dry spells and is commonly used to study drought risk.",
+                   
+                   "CWD" = "<b>CWD – Consecutive Wet Days</b><br>
+             Maximum number of consecutive days with rainfall ≥ 1 mm.
+             CWD captures persistent wet spells and prolonged rainy conditions.",
+                   
+                   "RxDday" = "<b>RxDday – Maximum X-Day Precipitation</b><br>
+                Highest accumulated rainfall over any X-day rolling window (e.g., 1-day, 5-day).
+                This index measures short-duration extreme rainfall events.",
+                   
+                   "Rnnmm" = "<b>Rnnmm – Heavy Rainfall Days</b><br>
+               Number of days where precipitation exceeds a specified threshold (e.g., ≥ 10 mm).
+               It represents the frequency of heavy rainfall events.",
+                   
+                   "R95p" = "<b>R95p – Very Wet Days</b><br>
+              Total rainfall from days exceeding the <b>95th percentile</b> of daily precipitation
+              during the baseline period (1951–1980).<br><br>
+              <u>How the percentile is computed:</u><br>
+              • Only wet days (≥ 1 mm) from 1951–1980 are used.<br>
+              • The 95th percentile (p95) is computed from this baseline distribution.<br>
+              • For each year, all days with precipitation > p95 are summed.<br>
+              This index represents moderate to strong rainfall extremes.",
+                   
+                   "R99p" = "<b>R99p – Extremely Wet Days</b><br>
+              Total rainfall from days exceeding the <b>99th percentile</b> of daily precipitation
+              during the baseline period (1951–1980).<br><br>
+              <u>How the percentile is computed:</u><br>
+              • Only wet days (≥ 1 mm) from the 1951–1980 baseline are used.<br>
+              • The 99th percentile (p99) is derived from these values.<br>
+              • All days above p99 are summed for each year.<br>
+              This index reflects very rare and extreme rainfall events.",
+                   
+                   "R95pTOT" = "<b>R95pTOT – Contribution of Very Wet Days</b><br>
+                 Percentage of annual precipitation contributed by days above the 95th percentile (R95p).
+                 Indicates how dominant moderate extreme events are in total rainfall.",
+                   
+                   "R99pTOT" = "<b>R99pTOT – Contribution of Extremely Wet Days</b><br>
+                 Percentage of annual precipitation contributed by days above the 99th percentile (R99p).
+                 Highlights how rare extreme rainfall events influence total precipitation."
+    )
+    
+    HTML(desc)
   })
   
-  
-  ###------------------------------------Climate Indices------------------------
+  ###------------------------------------Climate Indices Parameters------------------------
   output$index_parameters <- renderUI({
     req(input$climate_index)
-    
     if (input$climate_index == "RxDday") {
       numericInput("rolling_window", "Rolling Window (days):", value = 5, min = 1, max = 10)
-    } else if (input$climate_index %in% c("PRCPTOT", "CDD","Rnnmm")) {
+    } else if (input$climate_index %in% c("PRCPTOT", "CDD","Rnnmm","CWD")) {
       numericInput("threshold", "Threshold (mm):", value = 1, min = 0, max = 200)
     }
   })
@@ -286,31 +277,24 @@ server <- function(input, output, session) {
   ####------------------------------------Calculate Climate Indices-------------------------------
   indices_calculate <- eventReactive(input$compute_index, {
     req(r_daily(), input$climate_index, pts(), daily_dates())
-    
-    r <- r_daily() ##daily rasters
-    points <- pts() ##coordinates for each location
-    dates <- daily_dates() ##dates Jan 01 to Dec 31
-    
+    r <- r_daily()
+    points <- pts()
+    dates <- daily_dates()
     month_group <- format(dates, "%Y-%m")
     unique_months <- unique(month_group)
     result_list <- list()
     
-    ##----------------------PRCPTOT--------------------------
-    
+    ## Example: PRCPTOT calculation
     if (input$climate_index == "PRCPTOT") {
       req(input$threshold)
       threshold <- as.numeric(input$threshold)
-
-      
       for (m in unique_months) {
         month_idx <- which(month_group == m)
         month_r <- r[[month_idx]]
-        vals <- extract(month_r, points)
-        vals <- vals[, -1, drop = FALSE]
+        vals <- extract(month_r, points)[,-1, drop = FALSE]
         PRCPTOT_vals <- apply(vals, 1, function(x) sum(x[x >= threshold], na.rm = TRUE))
         points$PRCPTOT <- PRCPTOT_vals
-        template <- month_r[[1]]
-        PRCPTOT_r <- rasterize(points, template, field = "PRCPTOT")
+        PRCPTOT_r <- rasterize(points, month_r[[1]], field = "PRCPTOT")
         names(PRCPTOT_r) <- m
         result_list[[m]] <- PRCPTOT_r
       }
@@ -320,127 +304,172 @@ server <- function(input, output, session) {
     }
     
     ##----------------------CDD------------------------------
-    else if(input$climate_index=="CDD"){
+    else if (input$climate_index == "CDD") {
       req(input$threshold)
       threshold <- as.numeric(input$threshold)
+      vals <- extract(r, points)[,-1, drop=FALSE]
       
-      ##Extract daily rainfall at point
-      rain_values<-terra::extract(r,points)
-      ##Remove ID column
-      rain_values<-rain_values[,-1]
-      
-      ##define the customize function
-      CDD<-function(daily_precip,threshold=1){
-        dry<-as.numeric(daily_precip)<threshold
-        dry[is.na(dry)]<-FALSE
-        
-        if(all(!dry)) return(0) ##no dry days
-        rle_dry<-rle(dry)
-        max_cdd<-max(rle_dry$lengths[rle_dry$values])
-        
-        return(max_cdd)
+      CDD_fun <- function(daily_precip, threshold){
+        dry <- as.numeric(daily_precip) < threshold
+        dry[is.na(dry)] <- FALSE
+        if(all(!dry)) return(0)
+        rle_dry <- rle(dry)
+        max(rle_dry$lengths[rle_dry$values])
       }
       
-      ##Apply above function for each station
-      cdd_values<-apply(rain_values,1,CDD,threshold=threshold)
-      
-      points$CDD<-cdd_values
-      ##rasterize output
-      CDD_raster<-rasterize(points,r[[1]],field="CDD")
-      names(CDD_raster)<-"CDD"
+      cdd_values <- apply(vals, 1, CDD_fun, threshold = threshold)
+      points$CDD <- cdd_values
+      CDD_raster <- rasterize(points, r[[1]], field = "CDD")
+      names(CDD_raster) <- "CDD"
       return(CDD_raster)
     }
     
-    ##---------------------------------------Rxdday----------------------------------
-    else if(input$climate_index=="RxDday"){
-         req(input$rolling_window)
-         roll_window<-as.numeric(input$rolling_window)
+    ##----------------------RxDday----------------------------
+    else if (input$climate_index == "RxDday") {
+      req(input$rolling_window)
+      roll_window <- as.numeric(input$rolling_window)
       
-         
-         ##loop through all the months January to December
-         for (month in unique_months) {
-           ##define end date and start date for each month
-           monthly_index<-which(month_group==month)
-           
-           
-           ##Daily precipitation data for each month
-           monthly_precipitation<-r[[monthly_index]]
-           
-           ##Daily precipitation data in each month each location
-           vals<-extract(monthly_precipitation,points)
-           vals_mat<-as.matrix(vals[,-1,drop=FALSE]) ##remove ID column
-           
-           
-           ## Compute the rolling window days
-           if(ncol(vals_mat) >=  roll_window){
-             roll_sum <- apply(vals_mat, 1, function(x) rollapply(x, width =  roll_window, FUN = sum, align = "left", na.rm = TRUE))
-             roll_sum <- as.matrix(roll_sum)
-             monthly_Rxdday <- apply(roll_sum, 2, max, na.rm = TRUE)
-           }else{
-             monthly_Rxdday <- rep(NA, nrow(vals))
-           }
-           
-           
-           ##Attach the result as points
-           points$Rxdday<-monthly_Rxdday
-           
-           ##create the raster layers
-           templete<-monthly_precipitation[[1]]
-           Rxdday_raster<-rasterize(points,templete,field="Rxdday")
-           names(Rxdday_raster)<-month
-           result_list[[month]]<-Rxdday_raster
-         }
-         
-         Rxdday_stack <- rast(result_list)
-         names(Rxdday_stack) <- unique_months
-         return(Rxdday_stack)
-      
+      for (m in unique_months) {
+        month_idx <- which(month_group == m)
+        month_r <- r[[month_idx]]
+        vals <- extract(month_r, points)[,-1, drop=FALSE]
+        
+        roll_sum <- apply(vals, 1, function(x){
+          if(length(x) >= roll_window){
+            max(zoo::rollapply(x, width=roll_window, FUN=sum, align="left", na.rm=TRUE))
+          } else NA
+        })
+        
+        points$RxDday <- roll_sum
+        RxDday_raster <- rasterize(points, month_r[[1]], field = "RxDday")
+        names(RxDday_raster) <- m
+        result_list[[m]] <- RxDday_raster
+      }
+      RxDday_stack <- rast(result_list)
+      names(RxDday_stack) <- unique_months
+      return(RxDday_stack)
     }
     
-    ##-----------------------------Rnnmm--------------------------------
-    else if(input$climate_index=="Rnnmm"){
+    ##----------------------Rnnmm----------------------------
+    else if (input$climate_index == "Rnnmm") {
       req(input$threshold)
       threshold <- as.numeric(input$threshold)
       
-      ##define the user define function for climate indices Rnnmm
-      Rnnmm<-function(daily_precip,threshold){
-        no_days<-sum(daily_precip>threshold)
-        return(no_days)
+      for (m in unique_months) {
+        month_idx <- which(month_group == m)
+        month_r <- r[[month_idx]]
+        vals <- extract(month_r, points)[,-1, drop=FALSE]
+        Rnnmm_vals <- apply(vals, 1, function(x) sum(x > threshold, na.rm=TRUE))
+        points$Rnnmm <- Rnnmm_vals
+        Rnnmm_raster <- rasterize(points, month_r[[1]], field = "Rnnmm")
+        names(Rnnmm_raster) <- m
+        result_list[[m]] <- Rnnmm_raster
       }
-      
-      ##loo[ through all the months Jan-Dec]
-      for (month in unique_months) {
-        ##define end date and start date for each month
-        monthly_index<-which(month_group==month)
-        
-        ##Daily precipitation data for each month
-        monthly_precipitation<-r[[monthly_index]]
-        
-        ##Daily precipitation data in each month each location
-        vals<-extract(monthly_precipitation,points)
-        vals_mat<-as.matrix(vals[,-1,drop=FALSE]) ##remove ID column
-        
-        monthly_days<-apply(vals_mat,1,Rnnmm,threshold=threshold)
-        
-        ##Attach the result as points
-        points$Rnnmm<-monthly_days
-        
-        ##create the raster layers
-        templete<-monthly_precipitation[[1]]
-        Rnnmm_raster<-rasterize(points,templete,field="Rnnmm")
-        
-       
-        names(Rnnmm_raster)<-month
-        result_list[[month]]<-Rnnmm_raster
-        
-      }
-      
       Rnnmm_stack <- rast(result_list)
       names(Rnnmm_stack) <- unique_months
       return(Rnnmm_stack)
+    }
+    
+    ##-------------------------CWD-----------------------------------
+    else if(input$climate_index=="CWD"){
+       req(input$threshold)
+       threshold <- as.numeric(input$threshold)
+       vals <- extract(r, points)[,-1, drop=FALSE]
+       
+       ##define the customize function
+       CWD<-function(daily_precip,threshold){
+         wet<-as.numeric(daily_precip)>=threshold
+         if(all(!wet)) return(0) ##no wet days all are dry days
+         rle_wet<-rle(wet)
+         max_cwd<-max(rle_wet$lengths[rle_wet$values])
+         
+         return(max_cwd)
+       }
+       cwd_values <- apply(vals, 1,CWD, threshold = threshold)
+       points$CWD <- cwd_values
+       CWD_raster <- rasterize(points, r[[1]], field = "CWD")
+       names(CWD_raster) <- "CWD"
+       return(CWD_raster)
       
     }
     
+    ##---------------------------------R95p-----------------------------------------
+    else if(input$climate_index=="R95p"){
+      ##read the 95th percentile value in the file
+      p95 <- readRDS("C:/Hydrology-Project/Rainfall Trend/scripts/p95_threshold.rds")
+      vals <- extract(r, points)[,-1, drop=FALSE]
+      
+      ##define the customize function
+      R95p<-function(daily_precip,threshold){
+        wet<-sum(daily_precip[as.numeric(daily_precip)>threshold])
+        return(wet)
+      }
+      
+      ##Apply above function for each station
+      very_wet_days<-apply(vals,1,R95,threshold=p95)
+      
+      points$R95p<-very_wet_days
+      ##rasterize output
+      R95p_raster<-rasterize(points,r[[1]],field="R95p")
+      names(R95p_raster) <- "R95p"
+      return(R95p_raster)
+    }
+    
+    ##---------------------------------R99p-----------------------------------------
+    else if(input$climate_index=="R99p"){
+      ##read the 99th percentile value in the file
+      p99 <- readRDS("C:/Hydrology-Project/Rainfall Trend/scripts/p99_threshold.rds")
+      vals <- extract(r, points)[,-1, drop=FALSE]
+      
+      ##define the customize function
+      R99p<-function(daily_precip,threshold){
+        wet<-sum(daily_precip[as.numeric(daily_precip)>threshold])
+        return(wet)
+      }
+      
+      ##Apply above function for each station
+      extreme_wet_days<-apply(vals,1,R99p,threshold=p99)
+      
+      points$R99p<-extreme_wet_days
+      ##rasterize output
+      R99p_raster<-rasterize(points,r[[1]],field="R99p")
+      names(R99p_raster) <- "R99p"
+      return(R99p_raster)
+    }
+    ##---------------------------------R95pTOT-----------------------------------------
+    else if(input$climate_index=="R95pTOT"){
+      ##read the annual PRCPTOT percentile value in the file
+      annual_PRCPTOT <- readRDS("C:/Hydrology-Project/Rainfall Trend/scripts/annual_PRCPTOT.rds")
+      ##read the R95p value in the file
+      R95p <- readRDS("C:/Hydrology-Project/Rainfall Trend/scripts/R95_threshold.rds")
+      
+      ##calculate the indices
+      R95pTOT<-(100*R95p)/annual_PRCPTOT
+      
+      points$R95pTOT<-R95pTOT
+      ##rasterize output
+      R95pTOT_raster<-rasterize(points,r[[1]],field="R95pTOT")
+      names(R95pTOT_raster) <- "R95pTOT"
+      return(R95pTOT_raster)
+      
+    }
+    ##------------------------------R99pTOT----------------------------------------------
+    else if(input$climate_index=="R99pTOT"){
+      ##read the annual PRCPTOT percentile value in the file
+      annual_PRCPTOT <- readRDS("C:/Hydrology-Project/Rainfall Trend/scripts/annual_PRCPTOT.rds")
+      ##read the R99p value in the file
+      R99<- readRDS("C:/Hydrology-Project/Rainfall Trend/scripts/R99_threshold.rds")
+      
+      ##calculate the indices
+      R99pTOT<-(100*R99)/annual_PRCPTOT
+      
+      points$R99pTOT<-R99pTOT
+      ##rasterize output
+      R99pTOT_raster<-rasterize(points,r[[1]],field="R99pTOT")
+      names(R99pTOT_raster) <- "R99pTOT"
+      return(R99pTOT_raster)
+      
+    }
   })
   
   ###---------------------------------------Month Selector for Indices-------------------------------
@@ -451,38 +480,19 @@ server <- function(input, output, session) {
   })
   
   ###---------------------------------------Output of Climate Indices-------------------------------
-  output$index_plot <- renderPlot({
+  output$index_map <- renderTmap({
     req(indices_calculate(), input$selected_index_month)
+    
     r_stack <- indices_calculate()
-    month_name <- input$selected_index_month
+    m <- input$selected_index_month
+    r_show <- r_stack[[m]]
     
-    # Clean the month name (remove "X" and replace "." with "-")
-    month_clean <- gsub("^X", "", month_name)
-    month_clean <- gsub("\\.", "-", month_clean)
-    
-    # Convert safely to Date, suppressing harmless warnings
-    pretty_month <- suppressWarnings(format(as.Date(paste0(month_clean, "-01"), "%Y-%m-%d"), "%B %Y"))
-    
-    roll_window<-input$rolling_window
-    threshold<-input$threshold
-    
-    if(input$climate_index=="PRCPTOT"){
-      plot(r_stack[[month_name]], main = paste("PRCPTOT -", pretty_month),
-           legend.args = list(text = "Monthly Total Rainfall (mm)", side = 4, line = 2))
-    }
-    else if(input$climate_index=="CDD"){
-      plot(r_stack[[month_name]], main = paste("CDD -", pretty_month),
-           legend.args = list(text = "Consecutive Dry Days (days)", side = 4, line = 2))
-    }
-    else if(input$climate_index=="RxDday"){
-      plot(r_stack[[month_name]], main = paste0("Rx", roll_window, "day - ", pretty_month),
-           legend.args = list(text = paste0("Max ", roll_window, "-Day Rainfall (mm)"), side = 4, line = 2))
-    }
-    else if(input$climate_index=="Rnnmm"){
-      plot(r_stack[[month_name]], main = paste0("R", threshold, "mm - ", pretty_month),
-           legend.args = list(text = paste0("Days > ", threshold, " mm"), side = 4, line = 2))
-    }
-    
+    tm_shape(r_show) +
+      tm_raster(
+        palette = "-Spectral",
+        title = paste(input$climate_index, ":", m)
+      ) +
+      tm_layout(legend.outside = TRUE)
   })
   
   ###-------------------------------------Download Button------------------------------------
@@ -495,7 +505,9 @@ server <- function(input, output, session) {
       writeRaster(indices_calculate()[[input$selected_index_month]], file, overwrite = TRUE)
     }
   )
+  
 }
 
 shinyApp(ui, server)
 
+ 

@@ -65,3 +65,6 @@ plot(rasters,
      main = "R99p for 1951",
      col = hcl.colors(30, "YlOrRd"))
 
+# Save to files
+saveRDS(extreme_wet_days,"C:/Hydrology-Project/Rainfall Trend/scripts/R99_threshold.rds")
+

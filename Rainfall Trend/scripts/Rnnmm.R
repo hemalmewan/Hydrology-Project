@@ -15,6 +15,7 @@ r<-rast(url) ##convert raster object
 dates<-as.Date(time(r)) ##time range 1951-01-01 to 1951-12-31
 
 
+
 points<-read.csv(url_1) ##read csv file 
 pts<-vect(points,geom=c("lon","lat"),crs=crs(r)) ##convert the lat lon as the spatial locations
 

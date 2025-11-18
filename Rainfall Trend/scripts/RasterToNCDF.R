@@ -27,16 +27,16 @@ for (year in 1951:1981) {
   writeCDF(r_stack,
            filename = out_nc,
            overwrite = TRUE,
-           varname = "precip_day",
+           varname = "Day",
            unit = "mm/day",
            longname = "Daily precipitation",
-           time = dates,         # ⬅️ correct way to add time!
+           time = dates,
+           tname = "time",
+           tunits = "days since 1950-01-01",
            compression = 4)
   
   cat("Created NetCDF for year:", year, "\n")
 }
 
 cat("All NetCDF files created successfully!\n")
-
-
 

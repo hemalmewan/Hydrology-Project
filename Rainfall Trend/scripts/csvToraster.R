@@ -49,10 +49,13 @@ url<-"C:/Hydrology-Project/Rainfall Trend/yearly-rasters/rainfall_1954_day_tif/r
 
 r<-rast(url)
 
+time(r)
+
 precip<-values(r)
 
 
 precip
+
 
 # Plot with scientific color scale
 plot(r, 

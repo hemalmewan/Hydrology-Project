@@ -3,6 +3,7 @@
 ##import required libraries
 library(terra)
 
+
 ##path of the nc file
 url<-"C:/Hydrology-Project/Rainfall Trend/NCDF/rainfall_1951_daily.nc"
 ##path of the csv file 
@@ -13,6 +14,9 @@ save_url<-"C:/Hydrology-Project/Rainfall Trend/indices/CWD_1951/"
 
 r<-rast(url) ##convert raster object
 dates<-as.Date(time(r)) ##time range 1951-01-01 to 1951-12-31
+
+r
+
 
 points<-read.csv(url_1) ##read csv file 
 pts<-vect(points,geom=c("lon","lat"),crs=crs(r)) ##convert the lat lon as the spatial locations
