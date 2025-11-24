@@ -4,6 +4,8 @@ library(terra)
 library(tmap)
 library(reshape)
 library(zoo)
+library(ggplot2)
+library(DT)
 
 tmap_mode("view")  # Enable interactive maps
 
@@ -16,8 +18,7 @@ ui <- dashboardPage(
       menuItem("Data Quality", tabName = "quality", icon = icon("chart-line")),
       menuItem("Climate Indice", tabName = "climate_indice", icon = icon("cloud-rain")),
       
-      fileInput("ncfile", "Upload Yearly NetCDF File (.nc)", accept = ".nc"),
-      fileInput("stationfile", "Upload Station Coordinates (.csv)", accept = ".csv"),
+      numericInput("year","Enter Year (e.g., 1951):",value = 1951,min=1900,max =2010),
       
       radioButtons("viewType", "Select Raster Type:",
                    choices = c("Daily" = "daily", "Monthly" = "monthly"),
@@ -47,16 +48,50 @@ ui <- dashboardPage(
         ),
         fluidRow(
           box(width = 4, title ="Select Station",
-              selectInput("station", "Station ID:", choices = NULL)
+            numericInput("station", "Station ID:", value =1,min=1,max =357)
           ),
           box(width = 8, title ="Monthly Time Series Plot",
-              plotOutput("timeseries_plot", height ="350px")) 
+              plotOutput("timeseries_plot", height ="350px"))
+          
         ),
         fluidRow(
-          box(width = 12, title ="Monthly Precipitation Distribution",
-              plotOutput("dist_plot", height ="350px"))
+          box(width =6, title ="Monthly Precipitation Distribution",
+              plotOutput("monthly_boxplot", height ="350px")),
+          
+          box(width =6, title ="Monthly Precipitation Amounts",
+              plotOutput("monthly_barplot", height ="350px"))
+        ),
+        fluidRow(
+          box(
+            width = 12, title = "Seasonal Statistics for Selected Station",
+            status = "warning", solidHeader = TRUE,
+            
+            actionButton("compute_seasonal_stats", "Compute Seasonal Stats", icon = icon("calculator")),
+            downloadButton("download_seasonal_stats", "Download CSV"),
+            br(), br(),
+            
+            # --- Season descriptions ---
+            tags$div(
+              style = "background:#f7f7f7; padding:12px; border-radius:6px; margin-bottom:15px;",
+              HTML("
+      <b>Season Definitions:</b><br>
+      <ul style='margin:0; padding-left:20px;'>
+        <li><b>Winter:</b> December, January, February</li>
+        <li><b>Pre-monsoon:</b> March, April, May</li>
+        <li><b>Monsoon:</b> June, July, August, September</li>
+        <li><b>Post-monsoon:</b> October, November</li>
+        <li><b>Annual:</b> Entire year (January–December)</li>
+      </ul>
+    ")
+            ),
+            
+            # Expanded table
+            div(style = "overflow-x:auto; width:100%;",
+                tableOutput("seasonal_stats_table")
+            )
+          )
         )
-      ),
+        ),
       
       #---- TAB 3: Climate Indices ----
       tabItem(
@@ -91,14 +126,18 @@ server <- function(input, output, session) {
   
   ## ----------------------Load Raster--------------------------
   r_daily <- reactive({
-    req(input$ncfile)
-    rast(input$ncfile$datapath)
+      req(input$year)
+     nc_path<-paste0("C:/Hydrology-Project/Rainfall Trend/NCDF/rainfall_",input$year,"_daily.nc")
+     validate(need(file.exists(nc_path), paste("NetCDF file not found:", nc_path)))
+     rast(nc_path)
   })
   
   ##------------------------Load CSV----------------------------
   stations <- reactive({
-    req(input$stationfile)
-    read.csv(input$stationfile$datapath)
+    req(input$year)
+    csv_path<-paste0("C:/Hydrology-Project/Rainfall Trend/CSV files/drf_",input$year,"_new2.csv")
+    validate(need(file.exists(csv_path), paste("Station file not found:", csv_path)))
+    read.csv(csv_path)
   })
   
   ##--------------------------Extract the coordinates-----------------------------
@@ -115,14 +154,13 @@ server <- function(input, output, session) {
   daily_dates <- reactive({
     req(r_daily())
     n <- nlyr(r_daily())         # number of layers
-    start_date <- as.Date("1951-01-01")
+    start_date <- as.Date(paste0(input$year,"-01-01"))
     seq(start_date, by = "day", length.out = n)
   })
   
   output$meta <- renderPrint({
     req(r_daily())
     dates <- daily_dates()
-    names(r_daily()) <- as.character(dates)
     r_daily() ## display raster meta
   })
   
@@ -165,15 +203,170 @@ server <- function(input, output, session) {
     df_long
   })
   
+  
   ##-----------------------Time Series Plot for Selected Station-----------------------
   output$timeseries_plot <- renderPlot({
-    req(input$station)
-    df <- monthly_values()[monthly_values()$StationID == input$station,]
-    validate(need(nrow(df) > 0, "No data available for the selected station."))
+    req(input$station, r_daily(), pts(), stations(), daily_dates())
     
-    plot(df$Month, df$Rain, type = "o", pch = 16, col = "blue",
-         xlab = "Month", ylab = "Rainfall (mm)",
-         main = paste("Monthly Precipitation - Station:", input$station))
+    # find the row index of the selected station in the stations() data.frame
+    st_idx <- which(stations()$station_id == input$station)
+    validate(need(length(st_idx) == 1, "Selected station not found in station list."))
+    
+    # get raster and dates
+    r <- r_daily()
+    dates <- daily_dates()
+    
+    # ensure raster layer names match dates (optional but safe)
+    if (length(names(r)) != length(dates) || any(names(r) != as.character(dates))) {
+      names(r) <- as.character(dates)
+    }
+    
+    # extract daily values for all stations (first column is ID)
+    vals_all <- terra::extract(r, pts())   # data.frame: ID, layer1, layer2, ...
+    
+    # get the numeric precipitation vector for the selected station
+    # remove the first column (ID)
+    precip_vec <- as.numeric(vals_all[st_idx, -1])
+    
+    # build dataframe for plotting
+    plot_df <- data.frame(
+      date = dates,
+      precipitation = precip_vec
+    )
+    
+    # simple validation: need some non-NA values to plot
+    validate(need(any(!is.na(plot_df$precipitation)), "No precipitation data available for this station/year."))
+    
+    # plot
+    ggplot(plot_df, aes(x = date, y = precipitation)) +
+      geom_line(na.rm = TRUE,col="blue") +
+      geom_point(size = 0.8, na.rm = TRUE) +
+      theme_minimal() +
+      labs(
+        title = paste0("Daily Precipitation - Station: ", input$station, " (", input$year, ")"),
+        x = "Date",
+        y = "Daily Precipitation (mm)"
+      ) +
+      scale_x_date(date_breaks = "1 month", date_labels = "%b") +
+      theme(
+        axis.text.x = element_text(angle = 45, hjust = 1),
+        plot.title = element_text(face = "bold")
+      )
+  })
+  
+  ##----------------------------------------Monthly Distribution of each location------------------------------------------------
+  output$monthly_boxplot <- renderPlot({
+    req(input$station, r_daily(), pts(), stations(), daily_dates())
+    
+    # -------------------------------
+    # 1. Identify selected station
+    # -------------------------------
+    st_idx <- which(stations()$station_id == input$station)
+    validate(need(length(st_idx) == 1, "Selected station not found."))
+    
+    # -------------------------------
+    # 2. Extract daily values for all stations
+    # -------------------------------
+    vals_all <- terra::extract(r_daily(), pts())   # ID + daily layers
+    
+    # remove first column (ID)
+    precip_vec <- as.numeric(vals_all[st_idx, -1])
+    
+    # -------------------------------
+    # 3. Build dataframe
+    # -------------------------------
+    df <- data.frame(
+      date  = daily_dates(),
+      prec  = precip_vec
+    )
+    
+    # Add month factor (Jan–Dec)
+    df$month <- factor(format(df$date, "%b"), 
+                       levels = month.abb)  # ordered
+    
+    # -------------------------------
+    # 4. Need some valid data
+    # -------------------------------
+    validate(need(any(!is.na(df$prec)), 
+                  "No precipitation data for this station/year."))
+    
+    # -------------------------------
+    # 5. Plot monthly distributions
+    # -------------------------------
+    ggplot(df, aes(x = month, y = prec)) +
+      geom_boxplot(fill = "skyblue", outlier.color = "red", na.rm = TRUE) +
+      theme_minimal() +
+      labs(
+        title = paste("Monthly Precipitation Distribution - Station", input$station,"(",input$year,")"),
+        x = "Month",
+        y = "Daily Precipitation (mm)"
+      ) +
+      theme(
+        plot.title = element_text(face = "bold", size = 14),
+        axis.text.x = element_text(size = 12)
+      )
+  })
+  
+  ##----------------------------------------Monthly Precipitation Amount of each location------------------------------------------------
+  output$monthly_barplot <- renderPlot({
+    req(input$station, r_daily(), pts(), stations(), daily_dates())
+    
+    # 1. Identify station
+    st_idx <- which(stations()$station_id == input$station)
+    validate(need(length(st_idx) == 1, "Station not found."))
+    
+    # 2. Extract daily rainfall
+    vals_all <- terra::extract(r_daily(), pts())
+    vals_all<-vals_all[,-1]# remove ID column
+    precip_vec <- as.numeric(vals_all[st_idx,])
+    
+    # 3. Create dataframe
+    df <- data.frame(
+      date  = daily_dates(),
+      pr    = precip_vec
+    )
+    
+    # 4. Add month abbreviation
+    df$month <- factor(format(df$date, "%b"), levels = month.abb)
+    
+    # 5. Categorize rainfall intensity groups
+    df$category <- cut(
+      df$pr,
+      breaks = c(-Inf, 1, 2, 5, 10, 20, 50, 100, Inf),
+      labels = c(
+        "<1 mm (Dry)",
+        "1–2 mm",
+        "2–5 mm",
+        "5–10 mm",
+        "10–20 mm",
+        "20–50 mm",
+        "50–100 mm",
+        ">100 mm"
+      ),
+      right = FALSE
+    )
+    
+    # 6. Count number of days in each category per month
+    df_count <- aggregate(
+      list(count = rep(1, nrow(df))),
+      by = list(month = df$month, category = df$category),
+      FUN = sum
+    )
+    
+    # 7. Plot stacked bar chart
+    ggplot(df_count, aes(x = month, y = count, fill = category)) +
+      geom_bar(stat = "identity") +
+      theme_minimal() +
+      labs(
+        title = paste("Rainfall Category Distribution - Station", input$station),
+        x = "Month",
+        y = "Number of Days",
+        fill = "Rainfall Category"
+      ) +
+      theme(
+        axis.text.x = element_text(size = 12),
+        plot.title = element_text(size = 14, face = "bold")
+      )
   })
   
   ##---------------------------------------Dynamic UI---------------------------------------------
@@ -185,6 +378,72 @@ server <- function(input, output, session) {
       selectInput("selected_month", "Select Month:", choices = month_labels())
     }
   })
+  
+  ##---------------------------------------Seasonal Statistics of each location---------------------------------------
+  seasonal_stats_result <- eventReactive(input$compute_seasonal_stats, {
+    req(r_daily(), pts(), stations(), input$station)
+    
+    st_idx <- which(stations()$station_id == input$station)
+    validate(need(length(st_idx) == 1, "Selected station not found."))
+    
+    # Extract and ensure numeric vector
+    vals_all <- terra::extract(r_daily(), pts())
+    rain_values <- vals_all[,-1]           # remove ID
+    station_rain <- as.numeric(rain_values[st_idx, ])
+    
+    n <- nlyr(r_daily())
+    dates <- seq(as.Date(paste0(input$year, "-01-01")), by = "day", length.out = n)
+    months <- as.numeric(format(dates, "%m"))
+    
+    # Seasonal columns
+    winter_cols       <- which(months %in% c(12, 1, 2))
+    pre_monsoon_cols  <- which(months %in% c(3, 4, 5))
+    monsoon_cols      <- which(months %in% c(6, 7, 8, 9))
+    post_monsoon_cols <- which(months %in% c(10, 11))
+    
+    # Compute stats
+    season_stats <- function(x){
+      c(
+        Mean = mean(x, na.rm = TRUE),
+        Min  = min(x, na.rm = TRUE),
+        Max  = max(x, na.rm = TRUE),
+        SD   = sd(x, na.rm = TRUE),
+        Skewness = moments::skewness(x, na.rm = TRUE),
+        Kurtosis = moments::kurtosis(x, na.rm = TRUE)
+      )
+    }
+    
+    df <- data.frame(
+      Season = c("Winter","Pre-monsoon","Monsoon","Post-monsoon","Annual"),
+      rbind(
+        season_stats(station_rain[winter_cols]),
+        season_stats(station_rain[pre_monsoon_cols]),
+        season_stats(station_rain[monsoon_cols]),
+        season_stats(station_rain[post_monsoon_cols]),
+        season_stats(station_rain)
+      )
+    )
+    
+    df
+  })
+  
+  
+  output$seasonal_stats_table <- renderTable({
+    req(seasonal_stats_result())
+    seasonal_stats_result()
+  }, striped = TRUE, bordered = TRUE, hover = TRUE,width ="100%")
+  
+  ##----------------------------------------------------Download the result------------------------------
+  output$download_seasonal_stats <- downloadHandler(
+    filename = function() {
+      paste0("Seasonal_Stats_Station_", input$station, "_", input$year, ".csv")
+    },
+    content = function(file) {
+      req(seasonal_stats_result())
+      write.csv(seasonal_stats_result(), file, row.names = FALSE)
+    }
+  )
+  
   
   ##-----------------------------------------Render Map-------------------------------
   output$map <- renderTmap({

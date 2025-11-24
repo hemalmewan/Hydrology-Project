@@ -13,6 +13,10 @@ save_url<-"C:/Hydrology-Project/Rainfall Trend/indices/CDD_1951/"
 
 r<-rast(url) ##convert raster object
 
+
+summary(r)
+
+
 points<-read.csv(url_1) ##read csv file 
 pts<-vect(points,geom=c("lon","lat"),crs=crs(r)) ##convert the lat lon as the spatial locations
 

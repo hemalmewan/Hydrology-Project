@@ -15,7 +15,7 @@ save_url<-"C:/Hydrology-Project/Rainfall Trend/indices/CWD_1951/"
 r<-rast(url) ##convert raster object
 dates<-as.Date(time(r)) ##time range 1951-01-01 to 1951-12-31
 
-r
+summary(r[[1]])
 
 
 points<-read.csv(url_1) ##read csv file 
