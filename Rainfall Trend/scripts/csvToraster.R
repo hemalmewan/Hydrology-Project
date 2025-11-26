@@ -1,63 +1,119 @@
-library(terra)
+library(sp)
+library(raster)
+library(viridis)
 
-## Loop through the years 1954 to 1981
-for (year in 1954:1981) {
-  
-  # Read data
-  url <- paste0("C:/Hydrology-Project/Rainfall Trend/CSV files/drf_", year, "_new2.csv")
-  rain <- read.csv(url)
-  
-  # Extract coordinates
-  coords <- rain[, c("lon", "lat")]
-  
-  # Create output directory for this year
-  out_dir <- paste0("C:/Hydrology-Project/Rainfall Trend/yearly-rasters/rainfall_", year, "_day_tif")
-  if (!dir.exists(out_dir)) {
-    dir.create(out_dir, recursive = TRUE)
-  }
-  
-  # Loop through each day (starting from 4th column)
-  for (i in 4:ncol(rain)) {
-    
-    day_col <- names(rain)[i]
-    rainfall_day <- rain[[i]]
-    
-    # Create spatial points
-    pts <- vect(data.frame(coords, rainfall = rainfall_day),
-                geom = c("lon", "lat"), 
-                crs = "EPSG:4326")
-    
-    # Create a raster template
-    r_template <- rast(ext(pts), resolution = 0.25)
-    crs(r_template) <- "EPSG:4326"
-    
-    # Rasterize rainfall
-    r_rain <- rasterize(pts, r_template, field = "rainfall", fun = mean)
-    
-    # Save raster
-    filename <- paste0(out_dir, "/rainfall_", year, "_day_", i - 3, ".tif")
-    writeRaster(r_rain, filename, overwrite = TRUE)
-    
-    cat("Saved:", filename, "\n")
-  }
+# Function to check if a year is a leap year
+is_leap_year <- function(year) {
+  return((year %% 4 == 0 & year %% 100 != 0) | (year %% 400 == 0))
+}
+
+# Function to get number of days in a year
+days_in_year <- function(year) {
+  return(ifelse(is_leap_year(year), 366, 365))
 }
 
 
 
-##path of the nc file
-url<-"C:/Hydrology-Project/Rainfall Trend/yearly-rasters/rainfall_1954_day_tif/rainfall_1954_day_1.tif"
+# Base directory for CSV files and output
+base_csv_dir <- "C:/Hydrology-Project/Rainfall Trend/CSV files/"
+base_out_dir <- "C:/Hydrology-Project/Rainfall Trend/yearly-rasters/"
 
-r<-rast(url)
+# Loop through each year
+for(year in 1951:1980) {
+  
+  cat("\n========================================\n")
+  cat("Processing Year:", year, "\n")
+  cat("========================================\n")
+  
+  # Construct CSV filename (adjust pattern to match your files)
+  csv_file <- paste0(base_csv_dir, "drf_", year, "_new2.csv")
+  
+  # Check if file exists
+  if(!file.exists(csv_file)) {
+    cat("WARNING: File not found:", csv_file, "\n")
+    next
+  }
+  
+  # Read CSV
+  data <- read.csv(csv_file)
+  
+  # Convert to spatial points
+  coordinates(data) <- ~lon+lat
+  proj4string(data) <- CRS("+proj=longlat +datum=WGS84 +no_defs")
+  
+  # Extract coordinates
+  coords <- coordinates(data)
+  
+  # Identify all Day columns
+  day_cols <- grep("^Day_", names(data), value = TRUE)
+  n_days <- length(day_cols)
+  
+  # Expected number of days for this year
+  expected_days <- days_in_year(year)
+  
+  cat("Year", year, "is", ifelse(is_leap_year(year), "a LEAP year", "a regular year"), "\n")
+  cat("Expected days:", expected_days, "| Found days:", n_days, "\n")
+  
+  # Create output directory for this year
+  outdir <- paste0(base_out_dir, "Daily_Rasters_", year, "/")
+  dir.create(outdir, showWarnings = FALSE, recursive = TRUE)
+  
+  # Loop through each day
+  for(i in 1:n_days) {
+    
+    day_col <- day_cols[i]
+    
+    # Extract day number
+    day_num <- as.numeric(sub("Day_", "", day_col))
+    
+    # Create spatial points for this day
+    data_day <- data.frame(lon = coords[,1], 
+                           lat = coords[,2], 
+                           rainfall = data[[day_col]])
+    
+    # Remove NA values
+    data_day <- data_day[complete.cases(data_day), ]
+    
+    # Skip if no valid data
+    if(nrow(data_day) == 0) {
+      cat("  WARNING: No valid data for", day_col, "\n")
+      next
+    }
+    
+    # Convert to spatial points
+    coordinates(data_day) <- ~lon+lat
+    proj4string(data_day) <- CRS("+proj=longlat +datum=WGS84 +no_defs")
+    
+    # Create SpatialPixelsDataFrame
+    spdf <- SpatialPixelsDataFrame(points = data_day, 
+                                   data = data.frame(rainfall = data_day$rainfall), 
+                                   tolerance = 0.25)
+    
+    # Convert to raster
+    r <- raster(spdf)
+    crs(r) <- crs(spdf)
+    
+    # Create filename
+    filename <- sprintf("%sDay_%03d_%d.tif", outdir, day_num, year)
+    
+    # Save raster
+    writeRaster(r, filename, overwrite = TRUE)
+    
+    # Progress indicator (every 30 days)
+    if(day_num %% 30 == 0) {
+      cat("  Processed", day_num, "days...\n")
+    }
+  }
+  
+  cat("\nYear", year, "completed! Processed", n_days, "days\n")
+  cat("Rasters saved to:", outdir, "\n")
+}
 
-time(r)
-
-precip<-values(r)
-
-
-precip
+cat("\n========================================\n")
+cat("ALL YEARS PROCESSED SUCCESSFULLY!\n")
+cat("========================================\n")
 
 
-# Plot with scientific color scale
-plot(r, 
-     main = "Consecutive Dry Days (CDD) – 1954",
-     col = hcl.colors(30, "YlOrRd"))
+
+
+

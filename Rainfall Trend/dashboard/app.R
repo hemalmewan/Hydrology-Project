@@ -127,7 +127,7 @@ server <- function(input, output, session) {
   ## ----------------------Load Raster--------------------------
   r_daily <- reactive({
       req(input$year)
-     nc_path<-paste0("C:/Hydrology-Project/Rainfall Trend/NCDF/rainfall_",input$year,"_daily.nc")
+     nc_path<-paste0("C:/Hydrology-Project/Rainfall Trend/NCDF/Daily_nc_",input$year,".nc")
      validate(need(file.exists(nc_path), paste("NetCDF file not found:", nc_path)))
      rast(nc_path)
   })
@@ -665,7 +665,7 @@ server <- function(input, output, session) {
       }
       
       ##Apply above function for each station
-      very_wet_days<-apply(vals,1,R95,threshold=p95)
+      very_wet_days<-apply(vals,1,R95p,threshold=p95)
       
       points$R95p<-very_wet_days
       ##rasterize output

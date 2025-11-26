@@ -11,7 +11,7 @@ print(p99)  # check value
 library(terra)
 
 ##path of the nc file
-url<-"C:/Hydrology-Project/Rainfall Trend/NCDF/rainfall_1951_daily.nc"
+url<-"C:/Hydrology-Project/Rainfall Trend/NCDF/Daily_nc_1951.nc"
 ##path of the csv file 
 url_1<-"C:/Hydrology-Project/Rainfall Trend/CSV files/drf_1951_new2.csv"
 ##save output url

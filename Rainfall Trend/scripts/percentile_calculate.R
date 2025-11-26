@@ -27,7 +27,7 @@ for (year in 1951:1980) {
   cat("Processing year:", year, "\n")
   
   # Load rainfall netCDF for the year
-  ncfile <- paste0("C:/Hydrology-Project/Rainfall Trend/NCDF/rainfall_", year, "_daily.nc")
+  ncfile <- paste0("C:/Hydrology-Project/Rainfall Trend/NCDF/Daily_nc_", year, ".nc")
   r <- rast(ncfile)
   
   # Extract rainfall for all stations
@@ -56,6 +56,7 @@ p95 <- quantile(wet_values_30yr, 0.95, na.rm = TRUE)
 ##calculate the 99th percentile for the baseline time period(30 years)
 p99<-quantile(wet_values_30yr,0.99,na.rm=TRUE)
 
+p99
 
 # Save to files
 saveRDS(p95, "C:/Hydrology-Project/Rainfall Trend/scripts/p95_threshold.rds")

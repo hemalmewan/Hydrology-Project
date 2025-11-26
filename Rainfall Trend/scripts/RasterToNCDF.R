@@ -4,7 +4,7 @@ library(terra)
 for (year in 1951:1981) {
   
   # Define raster folder
-  folder <- paste0("C:/Hydrology-Project/Rainfall Trend/yearly-rasters/rainfall_", year, "_day_tif/")
+  folder <- paste0("C:/Hydrology-Project/Rainfall Trend/yearly-rasters/Daily_Rasters_", year,"/")
   
   # List all daily raster files
   files <- list.files(folder, pattern = "\\.tif$", full.names = TRUE)
@@ -22,7 +22,7 @@ for (year in 1951:1981) {
   dates <- seq(as.Date(paste0(year, "-01-01")), as.Date(paste0(year, "-12-31")), by="day")
   
   # Write NetCDF — include time here, not in SpatRaster
-  out_nc <- paste0("C:/Hydrology-Project/Rainfall Trend/NCDF/rainfall_", year, "_daily.nc")
+  out_nc <- paste0("C:/Hydrology-Project/Rainfall Trend/NCDF/Daily_nc_", year, ".nc")
   
   writeCDF(r_stack,
            filename = out_nc,
