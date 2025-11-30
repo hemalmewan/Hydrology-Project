@@ -7,6 +7,12 @@ library(reshape)
 library(zoo)
 library(ggplot2)
 library(DT)
+library(moments)
+
+# Database libraries
+library(DBI)
+library(RPostgres)
+library(pool)
 
 tmap_mode("view")  # Enable interactive maps
 
@@ -128,10 +134,27 @@ ui <- dashboardPage(
 
 server <- function(input, output, session) {
   
+  ##--------------------------# 1. ESTABLISH DATABASE CONNECTION----------------------------------
+  pool <- dbPool(
+    RPostgres::Postgres(),
+    dbname = "shinydb",
+    host = "postgres",       # This matches the service name in docker-compose.yml
+    user = "shinyuser",
+    password = "shiny_password",
+    port = 5432
+  )
+  
+  # Clean up connection when app stops
+  onStop(function() {
+    poolClose(pool)
+  })
   ## ----------------------Load Raster--------------------------
   r_daily <- reactive({
     req(input$year)
-    nc_path<-paste0("C:/UOC pdf/4th Year/DS 4007-Research/sptiao_tempo/Hydrology-Project/Rainfall Trend/NCDF/Daily_nc_",input$year,".nc")
+    # FIX: Changed C:/ path to relative container path
+    # Assuming files are in /srv/shiny-server/data/ inside the container
+    nc_path <- file.path("data/NCDF", paste0("Daily_nc_", input$year, ".nc"))
+    
     validate(need(file.exists(nc_path), paste("NetCDF file not found:", nc_path)))
     rast(nc_path)
   })
@@ -139,7 +162,9 @@ server <- function(input, output, session) {
   ##------------------------Load CSV----------------------------
   stations <- reactive({
     req(input$year)
-    csv_path<-paste0("C:/UOC pdf/4th Year/DS 4007-Research/sptiao_tempo/Hydrology-Project/Rainfall Trend/CSV files/drf_",input$year,"_new2.csv")
+    # FIX: Changed C:/ path to relative container path
+    csv_path <- file.path("data/CSV", paste0("drf_", input$year, "_new2.csv"))
+    
     validate(need(file.exists(csv_path), paste("Station file not found:", csv_path)))
     read.csv(csv_path)
   })
@@ -469,9 +494,6 @@ server <- function(input, output, session) {
       title_txt <- paste("Monthly Rainfall:", input$selected_month)
     }
     
-    # method = "bilinear" blends the edges.
-    r_show <- terra::disagg(r_show, fact = 5, method = "bilinear")
-    
     tm_shape(r_show) +
       tm_raster(
         col.scale = tm_scale_continuous(values = "Blues"),
@@ -677,7 +699,7 @@ server <- function(input, output, session) {
     ##---------------------------------R95p-----------------------------------------
     else if(input$climate_index=="R95p"){
       ##read the 95th percentile value in the file
-      p95 <- readRDS("C:/UOC pdf/4th Year/DS 4007-Research/sptiao_tempo/Hydrology-Project/Rainfall Trend/scripts/p95_threshold.rds")
+      p95 <- readRDS("data/p95_threshold.rds")
       vals <- extract(r, points)[,-1, drop=FALSE]
       
       ##define the customize function
@@ -699,7 +721,7 @@ server <- function(input, output, session) {
     ##---------------------------------R99p-----------------------------------------
     else if(input$climate_index=="R99p"){
       ##read the 99th percentile value in the file
-      p99 <- readRDS("C:/UOC pdf/4th Year/DS 4007-Research/sptiao_tempo/Hydrology-Project/Rainfall Trend/scripts/p99_threshold.rds")
+      p99 <- readRDS("data/p99_threshold.rds")
       vals <- extract(r, points)[,-1, drop=FALSE]
       
       ##define the customize function
@@ -720,9 +742,9 @@ server <- function(input, output, session) {
     ##---------------------------------R95pTOT-----------------------------------------
     else if(input$climate_index=="R95pTOT"){
       ##read the annual PRCPTOT percentile value in the file
-      annual_PRCPTOT <- readRDS("C:/UOC pdf/4th Year/DS 4007-Research/sptiao_tempo/Hydrology-Project/Rainfall Trend/scripts/annual_PRCPTOT.rds")
+      annual_PRCPTOT <- readRDS("data/annual_PRCPTOT.rds")
       ##read the R95p value in the file
-      R95p <- readRDS("C:/UOC pdf/4th Year/DS 4007-Research/sptiao_tempo/Hydrology-Project/Rainfall Trend/scripts/R95_threshold.rds")
+      R95p <- readRDS("data/R95_threshold.rds")
       
       ##calculate the indices
       R95pTOT<-(100*R95p)/annual_PRCPTOT
@@ -737,9 +759,9 @@ server <- function(input, output, session) {
     ##------------------------------R99pTOT----------------------------------------------
     else if(input$climate_index=="R99pTOT"){
       ##read the annual PRCPTOT percentile value in the file
-      annual_PRCPTOT <- readRDS("C:/UOC pdf/4th Year/DS 4007-Research/sptiao_tempo/Hydrology-Project/Rainfall Trend/scripts/annual_PRCPTOT.rds")
+      annual_PRCPTOT <- readRDS("data/annual_PRCPTOT.rds")
       ##read the R99p value in the file
-      R99<- readRDS("C:/UOC pdf/4th Year/DS 4007-Research/sptiao_tempo/Hydrology-Project/Rainfall Trend/scripts/R99_threshold.rds")
+      R99<- readRDS("data/R99_threshold.rds")
       
       ##calculate the indices
       R99pTOT<-(100*R99)/annual_PRCPTOT
@@ -768,73 +790,52 @@ server <- function(input, output, session) {
     m <- input$selected_index_month
     r_show <- r_stack[[m]]
     
-    # Apply Smoothing (Optional, looks nicer)
-    r_show <- terra::disagg(r_show, fact = 5, method = "bilinear")
-    
+    # ---- Create title here (fix) ----
     title_txt <- paste(input$climate_index, "-", m)
     
-    # Check if user entered coordinates
+    # If user provided lon & lat, create a point and add as overlay (highlight)
     show_point <- !is.na(input$sel_lon) && !is.na(input$sel_lat)
-    
     if(show_point){
-      # 1. Create the point vector
-      # We create a dataframe first to handle attributes easily
-      pt_df <- data.frame(lon = input$sel_lon, lat = input$sel_lat)
-      pt_vect <- vect(pt_df, geom = c("lon", "lat"), crs = crs(r_show))
+      # create a spatvector point with a label
+      pt_df <- data.frame(lon = input$sel_lon, lat = input$sel_lat, label = paste0("(", round(input$sel_lon,4), ", ", round(input$sel_lat,4), ")"))
+      pt_vect <- vect(pt_df, geom = c("lon","lat"), crs = crs(r_show))
       
-      # 2. EXTRACT THE VALUE
-      # We drill down into the raster at this point to get the value
-      # terra::extract returns a dataframe. 
-      extracted_data <- terra::extract(r_show, pt_vect)
-      
-      # The value is usually in the second column (first is ID), or first if ID=FALSE.
-      # Let's safely grab the numeric value.
-      # Since r_show is one layer, we grab the column corresponding to the layer name or index 2.
-      val <- extracted_data[, 2] 
-      
-      # Handle cases where point is in the ocean (NA)
-      val_display <- ifelse(is.na(val), "No Data", round(val, 2))
-      
-      # 3. Create the Label Text
-      # Example: "PRCPTOT: 150.42"
-      label_txt <- paste0(input$climate_index, ": ", val_display, "\n",
-                          "(", round(input$sel_lon, 2), ", ", round(input$sel_lat, 2), ")")
-      
-      # Add this label back to the vector so tmap can read it
-      pt_vect$map_label <- label_txt
-      
-      # 4. Render Map with Point and Label
       tm_shape(r_show) +
         tm_raster(
           col.scale = tm_scale_continuous(values = "Blues"),
-          col.legend = tm_legend(title = input$climate_index),
-          alpha = 0.8
+          col.legend = tm_legend(title = input$climate_index)
         ) +
         tm_shape(pt_vect) +
-        tm_symbols(size = 1.0, shape = 21, col = "red", border.col = "black") +
-        # This adds the text label next to the dot
-        tm_text("map_label", xmod = 1, ymod = 1, size = 1.0, bg.color="white", bg.alpha=0.7) + 
+        tm_symbols(size = 0.7, shape = 21, col = "red", border.col = "black") +
+        tm_text("label", xmod = 1, ymod = -1, size = 0.8) +
         tm_layout(
           main.title = title_txt,
           main.title.position = "center",
           legend.outside = TRUE,
-          legend.outside.position = "right"
-        )
+          legend.outside.position = "right",
+          legend.frame = TRUE,
+          legend.bg.color = "white"
+        ) +
+        tm_compass(type = "4star", position = c("left", "top"), size = 2) +
+        tm_scale_bar(position = c("left", "bottom"))
       
     } else {
-      # Default: Show raster only (No point selected)
+      # default: show raster only
       tm_shape(r_show) +
         tm_raster(
           col.scale = tm_scale_continuous(values = "Blues"),
-          col.legend = tm_legend(title = input$climate_index),
-          alpha = 0.8
+          col.legend = tm_legend(title = input$climate_index)
         ) +
         tm_layout(
           main.title = title_txt,
           main.title.position = "center",
           legend.outside = TRUE,
-          legend.outside.position = "right"
-        )
+          legend.outside.position = "right",
+          legend.frame = TRUE,
+          legend.bg.color = "white"
+        ) +
+        tm_compass(type = "4star", position = c("left", "top"), size = 2) +
+        tm_scale_bar(position = c("left", "bottom"))
     }
   })
   

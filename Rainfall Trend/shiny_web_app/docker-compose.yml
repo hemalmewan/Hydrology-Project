@@ -1,0 +1,36 @@
+version: '3.8'
+
+services:
+  ## 1. The Database Service
+  postgres:
+    image: postgis/postgis:latest ##PostgreSQL with Spatial extentions
+    container_name: postgres-server
+    environment:
+      - POSTGRES_USER=shinyuser
+      - POSTGRES_PASSWORD=shiny_password
+      - POSTGRES_DB=shinydb
+    volumes: 
+      - db_data:/var/lib/postgresql/data
+    networks: 
+      - rainfall-trend
+    
+  ## 2. The Shiny App Service
+  shiny_app:
+    build: .
+    container_name: climate-shiny-app
+    restart: always
+    ports:
+      - "3838:3838"
+    depends_on:
+      - postgres
+    networks:
+      - rainfall-trend
+
+##Define the network connecting the two
+networks:
+  rainfall-trend:
+    driver: bridge
+
+##Define volume for persisting database data
+volumes:
+  db_data:
