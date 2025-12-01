@@ -23,7 +23,10 @@ ui <- dashboardPage(
     numericInput("year","Enter Year (e.g., 1951):",value = 1951,min=1900,max =2010),
     
     radioButtons("viewType", "Select Raster Type:",
-                 choices = c("Daily" = "daily", "Monthly" = "monthly"),
+                 choices = c("Daily" = "daily", 
+                             "Monthly" = "monthly",
+                             "Seasonal"="seasonal",
+                             "Annual"="annual"),
                  selected = "daily"),
     
     uiOutput("date_or_month_selector")
@@ -36,7 +39,10 @@ ui <- dashboardPage(
         tabName = "raster",
         fluidRow(
           box(width = 12, title = "Rainfall Map", status = "primary", solidHeader = TRUE,
-              tmapOutput("map", height = "800px")
+              tmapOutput("map", height = "800px"),
+              
+              hr(), # Horizontal line for separation
+              downloadButton("download_raster_map", "Download Current Map (.tif)", class = "btn-primary")
           )
         )
       ),
@@ -131,7 +137,7 @@ server <- function(input, output, session) {
   ## ----------------------Load Raster--------------------------
   r_daily <- reactive({
     req(input$year)
-    nc_path<-paste0("C:/UOC pdf/4th Year/DS 4007-Research/sptiao_tempo/Hydrology-Project/Rainfall Trend/NCDF/Daily_nc_",input$year,".nc")
+    nc_path<-paste0("C:/Hydrology-Project/Rainfall Trend/NCDF/Daily_nc_",input$year,".nc")
     validate(need(file.exists(nc_path), paste("NetCDF file not found:", nc_path)))
     rast(nc_path)
   })
@@ -139,7 +145,7 @@ server <- function(input, output, session) {
   ##------------------------Load CSV----------------------------
   stations <- reactive({
     req(input$year)
-    csv_path<-paste0("C:/UOC pdf/4th Year/DS 4007-Research/sptiao_tempo/Hydrology-Project/Rainfall Trend/CSV files/drf_",input$year,"_new2.csv")
+    csv_path<-paste0("C:/Hydrology-Project/Rainfall Trend/CSV files/drf_",input$year,"_new2.csv")
     validate(need(file.exists(csv_path), paste("Station file not found:", csv_path)))
     read.csv(csv_path)
   })
@@ -182,6 +188,42 @@ server <- function(input, output, session) {
     r_m <- tapp(r, month_group, sum, na.rm = TRUE)
     names(r_m) <- unique(month_group)
     r_m
+  })
+  
+  ##------------------------------------Aggregate to Seasonal (Sum) [NEW]--------------------------------
+  r_seasonal <- reactive({
+    req(r_daily())
+    r <- r_daily()
+    dates <- daily_dates()
+    months <- as.numeric(format(dates, "%m"))
+    
+    season_list <- list(
+      "Winter"       = c(1, 2, 12),
+      "Pre-monsoon"  = c(3, 4, 5),
+      "Monsoon"      = c(6, 7, 8, 9),
+      "Post-monsoon" = c(10, 11)
+    )
+    
+    # Calculate sum for each season and store in a list
+    seasonal_stack <- list()
+    for(season in names(season_list)){
+      indices <- which(months %in% season_list[[season]])
+      if(length(indices) > 0){
+        # Subset layers for this season and sum them
+        seasonal_stack[[season]] <-sum(r[[indices]], na.rm = TRUE)
+      }
+    }
+    
+    # Convert list to raster stack
+    stk <- rast(seasonal_stack)
+    names(stk) <- names(seasonal_stack)
+    stk
+  })
+  
+  ##------------------------------------Aggregate to Annual (Sum) [NEW]--------------------------------
+  r_annual <- reactive({
+    req(r_daily())
+    sum(r_daily(), na.rm = TRUE)
   })
   
   ##---------------------------------------Month Labels--------------------------------------------
@@ -380,10 +422,20 @@ server <- function(input, output, session) {
   ##---------------------------------------Dynamic UI---------------------------------------------
   output$date_or_month_selector <- renderUI({
     req(r_daily())
+    
     if (input$viewType == "daily") {
       selectInput("selected_day", "Select Date:", choices = format(daily_dates(), "%Y-%m-%d"))
-    } else {
+    } 
+    else if (input$viewType == "monthly") {
       selectInput("selected_month", "Select Month:", choices = month_labels())
+    }
+    else if (input$viewType == "seasonal") {
+      selectInput("selected_season", "Select Season:", 
+                  choices = c("Winter", "Pre-monsoon", "Monsoon", "Post-monsoon"))
+    } 
+    else {
+      # For Annual, we don't need a secondary selector, but we return NULL to keep UI clean
+      return(NULL)
     }
   })
   
@@ -451,34 +503,63 @@ server <- function(input, output, session) {
       write.csv(seasonal_stats_result(), file, row.names = FALSE)
     }
   )
-  
-  
-  ##-----------------------------------------Render Map-------------------------------
-  output$map <- renderTmap({
-    req(r_daily())
+  ##--------------------------------------------Calculate Rasters for each season-----------------------
+  current_raster_data <- reactive({
+    req(r_daily(), input$viewType)
+    
+    # Initialize variables to return
+    r_out <- NULL
+    file_name <- ""
+    title_txt <- ""
     
     if (input$viewType == "daily") {
       req(input$selected_day)
       idx <- which(format(daily_dates(), "%Y-%m-%d") == input$selected_day)
-      r_show <- r_daily()[[idx]]
+      r_out <- r_daily()[[idx]]
+      file_name <- paste0("Daily_Rainfall_", input$selected_day)
       title_txt <- paste("Daily Rainfall:", input$selected_day)
-    } else {
+      
+    } else if (input$viewType == "monthly") {
       req(input$selected_month)
       ym <- names(month_labels())[month_labels() == input$selected_month]
-      r_show <- r_monthly()[[ym]]
+      r_out <- r_monthly()[[ym]]
+      file_name <- paste0("Monthly_Rainfall_", ym)
       title_txt <- paste("Monthly Rainfall:", input$selected_month)
+      
+    } else if (input$viewType == "seasonal") {
+      req(input$selected_season)
+      r_out <- r_seasonal()[[input$selected_season]]
+      file_name <- paste0("Seasonal_Rainfall_", input$selected_season, "_", input$year)
+      title_txt <- paste("Seasonal Rainfall:", input$selected_season, input$year)
+      
+    } else if (input$viewType == "annual") {
+      r_out <- r_annual()
+      file_name <- paste0("Annual_Rainfall_", input$year)
+      title_txt <- paste("Annual Rainfall:", input$year)
     }
     
-    # method = "bilinear" blends the edges.
+    # Return a list containing everything we need
+    list(r = r_out, name = file_name, title = title_txt)
+  })
+  ##-----------------------------------------Render Map-------------------------------
+  output$map <- renderTmap({
+    # Get data from the reactive above
+    data <- current_raster_data()
+    req(data$r)
+    
+    r_show <- data$r
+    
+    # Apply Smoothing for Display (Visual only)
     r_show <- terra::disagg(r_show, fact = 5, method = "bilinear")
     
     tm_shape(r_show) +
       tm_raster(
         col.scale = tm_scale_continuous(values = "Blues"),
-        col.legend = tm_legend(title = "Rainfall (mm)")
+        col.legend = tm_legend(title = "Rainfall (mm)"),
+        alpha = 0.8
       ) +
       tm_layout(
-        main.title = title_txt,
+        main.title = data$title,
         main.title.position = "center",
         legend.outside = TRUE,
         legend.outside.position = "right",
@@ -488,6 +569,20 @@ server <- function(input, output, session) {
       tm_compass(type = "4star", position = c("left", "top"), size = 2) +
       tm_scale_bar(position = c("left", "bottom"))
   })
+  
+  ##---------------------------Download the Raster map-----------------------------------
+  output$download_raster_map <- downloadHandler(
+    filename = function() {
+      paste0(current_raster_data()$name, ".tif")
+    },
+    content = function(file) {
+      req(current_raster_data()$r)
+      
+      # NOTE: We download the RAW data (scientifically accurate), 
+      # not the smoothed/disaggregated version used for display.
+      writeRaster(current_raster_data()$r, file, overwrite = TRUE)
+    }
+  )
   
   ###-----------------------------------Description of each climate index------------------------
   output$index_description <- renderUI({
@@ -677,7 +772,7 @@ server <- function(input, output, session) {
     ##---------------------------------R95p-----------------------------------------
     else if(input$climate_index=="R95p"){
       ##read the 95th percentile value in the file
-      p95 <- readRDS("C:/UOC pdf/4th Year/DS 4007-Research/sptiao_tempo/Hydrology-Project/Rainfall Trend/scripts/p95_threshold.rds")
+      p95 <- readRDS("C:/Hydrology-Project/Rainfall Trend/scripts/p95_threshold.rds")
       vals <- extract(r, points)[,-1, drop=FALSE]
       
       ##define the customize function
@@ -699,7 +794,7 @@ server <- function(input, output, session) {
     ##---------------------------------R99p-----------------------------------------
     else if(input$climate_index=="R99p"){
       ##read the 99th percentile value in the file
-      p99 <- readRDS("C:/UOC pdf/4th Year/DS 4007-Research/sptiao_tempo/Hydrology-Project/Rainfall Trend/scripts/p99_threshold.rds")
+      p99 <- readRDS("C:/Hydrology-Project/Rainfall Trend/scripts/p99_threshold.rds")
       vals <- extract(r, points)[,-1, drop=FALSE]
       
       ##define the customize function
@@ -720,9 +815,9 @@ server <- function(input, output, session) {
     ##---------------------------------R95pTOT-----------------------------------------
     else if(input$climate_index=="R95pTOT"){
       ##read the annual PRCPTOT percentile value in the file
-      annual_PRCPTOT <- readRDS("C:/UOC pdf/4th Year/DS 4007-Research/sptiao_tempo/Hydrology-Project/Rainfall Trend/scripts/annual_PRCPTOT.rds")
+      annual_PRCPTOT <- readRDS("C:/Hydrology-Project/Rainfall Trend/scripts/annual_PRCPTOT.rds")
       ##read the R95p value in the file
-      R95p <- readRDS("C:/UOC pdf/4th Year/DS 4007-Research/sptiao_tempo/Hydrology-Project/Rainfall Trend/scripts/R95_threshold.rds")
+      R95p <- readRDS("C:/Hydrology-Project/Rainfall Trend/scripts/R95_threshold.rds")
       
       ##calculate the indices
       R95pTOT<-(100*R95p)/annual_PRCPTOT
@@ -737,9 +832,9 @@ server <- function(input, output, session) {
     ##------------------------------R99pTOT----------------------------------------------
     else if(input$climate_index=="R99pTOT"){
       ##read the annual PRCPTOT percentile value in the file
-      annual_PRCPTOT <- readRDS("C:/UOC pdf/4th Year/DS 4007-Research/sptiao_tempo/Hydrology-Project/Rainfall Trend/scripts/annual_PRCPTOT.rds")
+      annual_PRCPTOT <- readRDS("C:/Hydrology-Project/Rainfall Trend/scripts/annual_PRCPTOT.rds")
       ##read the R99p value in the file
-      R99<- readRDS("C:/UOC pdf/4th Year/DS 4007-Research/sptiao_tempo/Hydrology-Project/Rainfall Trend/scripts/R99_threshold.rds")
+      R99<- readRDS("C:/Hydrology-Project/Rainfall Trend/scripts/R99_threshold.rds")
       
       ##calculate the indices
       R99pTOT<-(100*R99)/annual_PRCPTOT
