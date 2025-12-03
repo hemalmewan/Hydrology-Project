@@ -7,12 +7,12 @@ library(reshape)
 library(zoo)
 library(ggplot2)
 library(DT)
-library(moments)
 
-# Database libraries
+##Database libraries
 library(DBI)
 library(RPostgres)
 library(pool)
+
 
 tmap_mode("view")  # Enable interactive maps
 
@@ -29,7 +29,10 @@ ui <- dashboardPage(
     numericInput("year","Enter Year (e.g., 1951):",value = 1951,min=1900,max =2010),
     
     radioButtons("viewType", "Select Raster Type:",
-                 choices = c("Daily" = "daily", "Monthly" = "monthly"),
+                 choices = c("Daily" = "daily", 
+                             "Monthly" = "monthly",
+                             "Seasonal"="seasonal",
+                             "Annual"="annual"),
                  selected = "daily"),
     
     uiOutput("date_or_month_selector")
@@ -42,7 +45,10 @@ ui <- dashboardPage(
         tabName = "raster",
         fluidRow(
           box(width = 12, title = "Rainfall Map", status = "primary", solidHeader = TRUE,
-              tmapOutput("map", height = "800px")
+              tmapOutput("map", height = "800px"),
+              
+              hr(), # Horizontal line for separation
+              downloadButton("download_raster_map", "Download Current Map (.tif)", class = "btn-primary")
           )
         )
       ),
@@ -109,6 +115,10 @@ ui <- dashboardPage(
             box(width = 12, title = "Select Climate Index", status = "primary", solidHeader = TRUE,
                 selectInput("climate_index", "Climate Index:",
                             choices = c("PRCPTOT", "CDD", "RxDday","Rnnmm","CWD","R95p","R99p","R95pTOT","R99pTOT")),
+                
+                ##UI output for time scale
+                uiOutput("time_scale_ui"),
+                
                 # NEW: lon/lat inputs (optional)
                 numericInput("sel_lon", "Longitude (optional):", value = NA),
                 numericInput("sel_lat", "Latitude (optional):", value = NA),
@@ -134,27 +144,26 @@ ui <- dashboardPage(
 
 server <- function(input, output, session) {
   
-  ##--------------------------# 1. ESTABLISH DATABASE CONNECTION----------------------------------
-  pool <- dbPool(
+  ##--------------------------------------# Establish the Database Connection------------------------
+  pool<-dbPool(
     RPostgres::Postgres(),
-    dbname = "shinydb",
-    host = "postgres",       # This matches the service name in docker-compose.yml
-    user = "shinyuser",
-    password = "shiny_password",
-    port = 5432
+    dbname="shinydb",
+    host="postgres",
+    user="shinyuser",
+    password="shiny_password",
+    port=5432
   )
   
-  # Clean up connection when app stops
-  onStop(function() {
+  ##-----------------------------------------Clean up connection when app stops---------------------------
+  onStop(function(){
     poolClose(pool)
+    
   })
+  
   ## ----------------------Load Raster--------------------------
   r_daily <- reactive({
     req(input$year)
-    # FIX: Changed C:/ path to relative container path
-    # Assuming files are in /srv/shiny-server/data/ inside the container
-    nc_path <- file.path("data/NCDF", paste0("Daily_nc_", input$year, ".nc"))
-    
+    nc_path<-paste0("data/NCDF/Daily_nc_",input$year,".nc")
     validate(need(file.exists(nc_path), paste("NetCDF file not found:", nc_path)))
     rast(nc_path)
   })
@@ -162,11 +171,17 @@ server <- function(input, output, session) {
   ##------------------------Load CSV----------------------------
   stations <- reactive({
     req(input$year)
-    # FIX: Changed C:/ path to relative container path
-    csv_path <- file.path("data/CSV", paste0("drf_", input$year, "_new2.csv"))
     
-    validate(need(file.exists(csv_path), paste("Station file not found:", csv_path)))
-    read.csv(csv_path)
+    ##csv_path<-paste0("data/CSV/drf_",input$year,"_new2.csv")
+    ##validate(need(file.exists(csv_path), paste("Station file not found:", csv_path)))
+    ##read.csv(csv_path)
+    
+    ##define the query
+    query <- paste0('SELECT * FROM "Daily_precipitation_', input$year, '";')
+    ##execute the query
+    data<-dbGetQuery(pool,query)
+    return(data)
+   
   })
   
   ##--------------------------Extract the coordinates-----------------------------
@@ -207,6 +222,42 @@ server <- function(input, output, session) {
     r_m <- tapp(r, month_group, sum, na.rm = TRUE)
     names(r_m) <- unique(month_group)
     r_m
+  })
+  
+  ##------------------------------------Aggregate to Seasonal (Sum) [NEW]--------------------------------
+  r_seasonal <- reactive({
+    req(r_daily())
+    r <- r_daily()
+    dates <- daily_dates()
+    months <- as.numeric(format(dates, "%m"))
+    
+    season_list <- list(
+      "Winter"       = c(1, 2, 12),
+      "Pre-monsoon"  = c(3, 4, 5),
+      "Monsoon"      = c(6, 7, 8, 9),
+      "Post-monsoon" = c(10, 11)
+    )
+    
+    # Calculate sum for each season and store in a list
+    seasonal_stack <- list()
+    for(season in names(season_list)){
+      indices <- which(months %in% season_list[[season]])
+      if(length(indices) > 0){
+        # Subset layers for this season and sum them
+        seasonal_stack[[season]] <-sum(r[[indices]], na.rm = TRUE)
+      }
+    }
+    
+    # Convert list to raster stack
+    stk <- rast(seasonal_stack)
+    names(stk) <- names(seasonal_stack)
+    stk
+  })
+  
+  ##------------------------------------Aggregate to Annual (Sum) [NEW]--------------------------------
+  r_annual <- reactive({
+    req(r_daily())
+    sum(r_daily(), na.rm = TRUE)
   })
   
   ##---------------------------------------Month Labels--------------------------------------------
@@ -405,10 +456,20 @@ server <- function(input, output, session) {
   ##---------------------------------------Dynamic UI---------------------------------------------
   output$date_or_month_selector <- renderUI({
     req(r_daily())
+    
     if (input$viewType == "daily") {
       selectInput("selected_day", "Select Date:", choices = format(daily_dates(), "%Y-%m-%d"))
-    } else {
+    } 
+    else if (input$viewType == "monthly") {
       selectInput("selected_month", "Select Month:", choices = month_labels())
+    }
+    else if (input$viewType == "seasonal") {
+      selectInput("selected_season", "Select Season:", 
+                  choices = c("Winter", "Pre-monsoon", "Monsoon", "Post-monsoon"))
+    } 
+    else {
+      # For Annual, we don't need a secondary selector, but we return NULL to keep UI clean
+      return(NULL)
     }
   })
   
@@ -476,31 +537,63 @@ server <- function(input, output, session) {
       write.csv(seasonal_stats_result(), file, row.names = FALSE)
     }
   )
-  
-  
-  ##-----------------------------------------Render Map-------------------------------
-  output$map <- renderTmap({
-    req(r_daily())
+  ##--------------------------------------------Calculate Rasters for each season-----------------------
+  current_raster_data <- reactive({
+    req(r_daily(), input$viewType)
+    
+    # Initialize variables to return
+    r_out <- NULL
+    file_name <- ""
+    title_txt <- ""
     
     if (input$viewType == "daily") {
       req(input$selected_day)
       idx <- which(format(daily_dates(), "%Y-%m-%d") == input$selected_day)
-      r_show <- r_daily()[[idx]]
+      r_out <- r_daily()[[idx]]
+      file_name <- paste0("Daily_Rainfall_", input$selected_day)
       title_txt <- paste("Daily Rainfall:", input$selected_day)
-    } else {
+      
+    } else if (input$viewType == "monthly") {
       req(input$selected_month)
       ym <- names(month_labels())[month_labels() == input$selected_month]
-      r_show <- r_monthly()[[ym]]
+      r_out <- r_monthly()[[ym]]
+      file_name <- paste0("Monthly_Rainfall_", ym)
       title_txt <- paste("Monthly Rainfall:", input$selected_month)
+      
+    } else if (input$viewType == "seasonal") {
+      req(input$selected_season)
+      r_out <- r_seasonal()[[input$selected_season]]
+      file_name <- paste0("Seasonal_Rainfall_", input$selected_season, "_", input$year)
+      title_txt <- paste("Seasonal Rainfall:", input$selected_season, input$year)
+      
+    } else if (input$viewType == "annual") {
+      r_out <- r_annual()
+      file_name <- paste0("Annual_Rainfall_", input$year)
+      title_txt <- paste("Annual Rainfall:", input$year)
     }
+    
+    # Return a list containing everything we need
+    list(r = r_out, name = file_name, title = title_txt)
+  })
+  ##-----------------------------------------Render Map-------------------------------
+  output$map <- renderTmap({
+    # Get data from the reactive above
+    data <- current_raster_data()
+    req(data$r)
+    
+    r_show <- data$r
+    
+    # Apply Smoothing for Display (Visual only)
+    r_show <- terra::disagg(r_show, fact = 5, method = "bilinear")
     
     tm_shape(r_show) +
       tm_raster(
         col.scale = tm_scale_continuous(values = "Blues"),
-        col.legend = tm_legend(title = "Rainfall (mm)")
+        col.legend = tm_legend(title = "Rainfall (mm)"),
+        alpha = 0.8
       ) +
       tm_layout(
-        main.title = title_txt,
+        main.title = data$title,
         main.title.position = "center",
         legend.outside = TRUE,
         legend.outside.position = "right",
@@ -510,6 +603,20 @@ server <- function(input, output, session) {
       tm_compass(type = "4star", position = c("left", "top"), size = 2) +
       tm_scale_bar(position = c("left", "bottom"))
   })
+  
+  ##---------------------------Download the Raster map-----------------------------------
+  output$download_raster_map <- downloadHandler(
+    filename = function() {
+      paste0(current_raster_data()$name, ".tif")
+    },
+    content = function(file) {
+      req(current_raster_data()$r)
+      
+      # NOTE: We download the RAW data (scientifically accurate), 
+      # not the smoothed/disaggregated version used for display.
+      writeRaster(current_raster_data()$r, file, overwrite = TRUE)
+    }
+  )
   
   ###-----------------------------------Description of each climate index------------------------
   output$index_description <- renderUI({
@@ -568,7 +675,20 @@ server <- function(input, output, session) {
   })
   
   ###------------------------------------Climate Indices Parameters------------------------
-  output$index_parameters <- renderUI({
+  
+  
+  output$time_scale_ui <- renderUI({
+    req(input$climate_index)    
+    if (input$climate_index %in% c("PRCPTOT","RxDday","Rnnmm")) {       
+      radioButtons("index_time_scale", "Select Time Scale:",                    
+                   choices = c("Monthly", "Annual"),                    
+                   selected = "Monthly", inline = TRUE) 
+    }else { 
+      return(NULL) 
+    } 
+  })
+  
+   output$index_parameters <- renderUI({
     req(input$climate_index)
     if (input$climate_index == "RxDday") {
       numericInput("rolling_window", "Rolling Window (days):", value = 5, min = 1, max = 10)
@@ -589,22 +709,58 @@ server <- function(input, output, session) {
     
     ## Example: PRCPTOT calculation
     if (input$climate_index == "PRCPTOT") {
-      req(input$threshold)
-      threshold <- as.numeric(input$threshold)
-      for (m in unique_months) {
-        month_idx <- which(month_group == m)
-        month_r <- r[[month_idx]]
-        vals <- extract(month_r, points)[,-1, drop = FALSE]
-        PRCPTOT_vals <- apply(vals, 1, function(x) sum(x[x >= threshold], na.rm = TRUE))
-        points$PRCPTOT <- PRCPTOT_vals
-        PRCPTOT_r <- rasterize(points, month_r[[1]], field = "PRCPTOT")
-        names(PRCPTOT_r) <- m
-        result_list[[m]] <- PRCPTOT_r
-      }
-      PRCPTOT_stack <- rast(result_list)
-      names(PRCPTOT_stack) <- unique_months
-      return(PRCPTOT_stack)
+      
+      req(input$threshold)  
+      
+      time_scale <- if (!is.null(input$index_time_scale)) input$index_time_scale else "Monthly"           
+      threshold <- as.numeric(input$threshold)             
+      
+      ## 1. Monthly PRCPTOT calculation
+      for (m in unique_months) {         
+        month_idx <- which(month_group == m)        
+        month_r <- r[[month_idx]]        
+        vals <- extract(month_r, points)[, -1, drop = FALSE]         
+        
+        PRCPTOT_vals <- apply(
+          vals, 
+          1, 
+          function(x) sum(x[x >= threshold], na.rm = TRUE)
+        )
+        
+        points$PRCPTOT <- PRCPTOT_vals       
+        PRCPTOT_r <- rasterize(points, month_r[[1]], field = "PRCPTOT")        
+        names(PRCPTOT_r) <- m         
+        result_list[[m]] <- PRCPTOT_r      
+      }      
+      
+      PRCPTOT_stack <- rast(result_list)       
+      names(PRCPTOT_stack) <- unique_months 
+      
+      ## 2. Annual PRCPTOT
+      if (time_scale == "Annual") {
+        
+        rain_values <- terra::extract(r,points)
+        rain_values <- rain_values[, -1]
+        
+        annual_PRCPTOT_fun <- function(precip_value, threshold) {
+          wet_days <- sum(precip_value[precip_value >= threshold])
+          return(wet_days)
+        }
+        
+        annual_vals <- apply(rain_values, 1, annual_PRCPTOT_fun, threshold = threshold)
+        
+        points$annual_PRCPTOT <- annual_vals
+        
+        annual_PRCPTOT_raster <- rasterize(points, r[[1]], field = "annual_PRCPTOT")
+        names(annual_PRCPTOT_raster) <- paste0("Annual_PRCPTOT_", input$year)
+        
+        return(annual_PRCPTOT_raster)
+      } 
+      else { 
+        return(PRCPTOT_stack)
+      } 
     }
+    
     
     ##----------------------CDD------------------------------
     else if (input$climate_index == "CDD") {
@@ -630,19 +786,19 @@ server <- function(input, output, session) {
     ##----------------------RxDday----------------------------
     else if (input$climate_index == "RxDday") {
       req(input$rolling_window)
+      # Check time scale (Default to Monthly if null)
+      time_scale <- if (!is.null(input$index_time_scale)) input$index_time_scale else "Monthly"
       roll_window <- as.numeric(input$rolling_window)
-      
+      # 1. Calculate Monthly Stack
       for (m in unique_months) {
         month_idx <- which(month_group == m)
         month_r <- r[[month_idx]]
         vals <- extract(month_r, points)[,-1, drop=FALSE]
-        
         roll_sum <- apply(vals, 1, function(x){
           if(length(x) >= roll_window){
             max(zoo::rollapply(x, width=roll_window, FUN=sum, align="left", na.rm=TRUE))
           } else NA
         })
-        
         points$RxDday <- roll_sum
         RxDday_raster <- rasterize(points, month_r[[1]], field = "RxDday")
         names(RxDday_raster) <- m
@@ -650,14 +806,35 @@ server <- function(input, output, session) {
       }
       RxDday_stack <- rast(result_list)
       names(RxDday_stack) <- unique_months
-      return(RxDday_stack)
+      # 2. Check for Annual Logic
+      if (time_scale == "Annual") {
+        # IMPORTANT: For RxDday, we must re-calculate on the full year data
+        # because a 5-day max event might happen across Jan 31 and Feb 1.
+        # Extract full year daily values
+        rain_values <- terra::extract(r, points)[, -1] # remove ID column
+        annual_RxDday_fun <- function(daily_precip, window) {
+          if(length(daily_precip) >= window){
+            max(zoo::rollapply(daily_precip, width=window, FUN=sum, align="left", na.rm=TRUE))
+          } else { NA }
+        }
+        annual_vals <- apply(rain_values, 1, annual_RxDday_fun, window = roll_window)
+        points$annual_RxDday <- annual_vals
+        # Create Raster
+        annual_RxDday_raster <- rasterize(points, r[[1]], field = "annual_RxDday")
+        names(annual_RxDday_raster) <- paste0("Annual_RxDday_", input$year)
+        return(annual_RxDday_raster)
+      } else {
+        return(RxDday_stack)
+      }
     }
     
     ##----------------------Rnnmm----------------------------
     else if (input$climate_index == "Rnnmm") {
       req(input$threshold)
+      # Check time scale
+      time_scale <- if (!is.null(input$index_time_scale)) input$index_time_scale else "Monthly"
       threshold <- as.numeric(input$threshold)
-      
+      # 1. Calculate Monthly Stack
       for (m in unique_months) {
         month_idx <- which(month_group == m)
         month_r <- r[[month_idx]]
@@ -670,8 +847,39 @@ server <- function(input, output, session) {
       }
       Rnnmm_stack <- rast(result_list)
       names(Rnnmm_stack) <- unique_months
-      return(Rnnmm_stack)
+      # 2. Check for Annual Logic
+      if (time_scale == "Annual") {
+        # Optimization: Annual count is just the SUM of monthly counts
+        Rnnmm_annual <- sum(Rnnmm_stack, na.rm = TRUE)
+        names(Rnnmm_annual) <- paste0("Annual_Rnnmm_", input$year)
+        return(Rnnmm_annual)
+      } else {
+        return(Rnnmm_stack)
+      }
     }
+    ##-------------------------CWD-----------------------------------
+    else if(input$climate_index=="CWD"){
+      req(input$threshold)
+      threshold <- as.numeric(input$threshold)
+      vals <- extract(r, points)[,-1, drop=FALSE]
+      
+      ##define the customize function
+      CWD<-function(daily_precip,threshold){
+        wet<-as.numeric(daily_precip)>=threshold
+        if(all(!wet)) return(0) ##no wet days all are dry days
+        rle_wet<-rle(wet)
+        max_cwd<-max(rle_wet$lengths[rle_wet$values])
+        
+        return(max_cwd)
+      }
+      cwd_values <- apply(vals, 1,CWD, threshold = threshold)
+      points$CWD <- cwd_values
+      CWD_raster <- rasterize(points, r[[1]], field = "CWD")
+      names(CWD_raster) <- "CWD"
+      return(CWD_raster)
+      
+    }
+    
     
     ##-------------------------CWD-----------------------------------
     else if(input$climate_index=="CWD"){
@@ -790,52 +998,73 @@ server <- function(input, output, session) {
     m <- input$selected_index_month
     r_show <- r_stack[[m]]
     
-    # ---- Create title here (fix) ----
+    # Apply Smoothing (Optional, looks nicer)
+    r_show <- terra::disagg(r_show, fact = 5, method = "bilinear")
+    
     title_txt <- paste(input$climate_index, "-", m)
     
-    # If user provided lon & lat, create a point and add as overlay (highlight)
+    # Check if user entered coordinates
     show_point <- !is.na(input$sel_lon) && !is.na(input$sel_lat)
+    
     if(show_point){
-      # create a spatvector point with a label
-      pt_df <- data.frame(lon = input$sel_lon, lat = input$sel_lat, label = paste0("(", round(input$sel_lon,4), ", ", round(input$sel_lat,4), ")"))
-      pt_vect <- vect(pt_df, geom = c("lon","lat"), crs = crs(r_show))
+      # 1. Create the point vector
+      # We create a dataframe first to handle attributes easily
+      pt_df <- data.frame(lon = input$sel_lon, lat = input$sel_lat)
+      pt_vect <- vect(pt_df, geom = c("lon", "lat"), crs = crs(r_show))
       
+      # 2. EXTRACT THE VALUE
+      # We drill down into the raster at this point to get the value
+      # terra::extract returns a dataframe. 
+      extracted_data <- terra::extract(r_show, pt_vect)
+      
+      # The value is usually in the second column (first is ID), or first if ID=FALSE.
+      # Let's safely grab the numeric value.
+      # Since r_show is one layer, we grab the column corresponding to the layer name or index 2.
+      val <- extracted_data[, 2] 
+      
+      # Handle cases where point is in the ocean (NA)
+      val_display <- ifelse(is.na(val), "No Data", round(val, 2))
+      
+      # 3. Create the Label Text
+      # Example: "PRCPTOT: 150.42"
+      label_txt <- paste0(input$climate_index, ": ", val_display, "\n",
+                          "(", round(input$sel_lon, 2), ", ", round(input$sel_lat, 2), ")")
+      
+      # Add this label back to the vector so tmap can read it
+      pt_vect$map_label <- label_txt
+      
+      # 4. Render Map with Point and Label
       tm_shape(r_show) +
         tm_raster(
           col.scale = tm_scale_continuous(values = "Blues"),
-          col.legend = tm_legend(title = input$climate_index)
+          col.legend = tm_legend(title = input$climate_index),
+          alpha = 0.8
         ) +
         tm_shape(pt_vect) +
-        tm_symbols(size = 0.7, shape = 21, col = "red", border.col = "black") +
-        tm_text("label", xmod = 1, ymod = -1, size = 0.8) +
+        tm_symbols(size = 1.0, shape = 21, col = "red", border.col = "black") +
+        # This adds the text label next to the dot
+        tm_text("map_label", xmod = 1, ymod = 1, size = 1.0, bg.color="white", bg.alpha=0.7) + 
         tm_layout(
           main.title = title_txt,
           main.title.position = "center",
           legend.outside = TRUE,
-          legend.outside.position = "right",
-          legend.frame = TRUE,
-          legend.bg.color = "white"
-        ) +
-        tm_compass(type = "4star", position = c("left", "top"), size = 2) +
-        tm_scale_bar(position = c("left", "bottom"))
+          legend.outside.position = "right"
+        )
       
     } else {
-      # default: show raster only
+      # Default: Show raster only (No point selected)
       tm_shape(r_show) +
         tm_raster(
           col.scale = tm_scale_continuous(values = "Blues"),
-          col.legend = tm_legend(title = input$climate_index)
+          col.legend = tm_legend(title = input$climate_index),
+          alpha = 0.8
         ) +
         tm_layout(
           main.title = title_txt,
           main.title.position = "center",
           legend.outside = TRUE,
-          legend.outside.position = "right",
-          legend.frame = TRUE,
-          legend.bg.color = "white"
-        ) +
-        tm_compass(type = "4star", position = c("left", "top"), size = 2) +
-        tm_scale_bar(position = c("left", "bottom"))
+          legend.outside.position = "right"
+        )
     }
   })
   

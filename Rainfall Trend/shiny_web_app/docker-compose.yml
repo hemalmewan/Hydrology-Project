@@ -9,6 +9,8 @@ services:
       - POSTGRES_USER=shinyuser
       - POSTGRES_PASSWORD=shiny_password
       - POSTGRES_DB=shinydb
+    ports:
+      - "5432:5432"
     volumes: 
       - db_data:/var/lib/postgresql/data
     networks: 
@@ -21,6 +23,20 @@ services:
     restart: always
     ports:
       - "3838:3838"
+    depends_on:
+      - postgres
+    networks:
+      - rainfall-trend
+
+  ##3. pgadmin -The Databse viewer
+  pgadmin:
+    image: dpage/pgadmin4
+    container_name: pgadmin-container
+    environment:
+      - PGADMIN_DEFAULT_EMAIL=admin@admin.com
+      - PGADMIN_DEFAULT_PASSWORD=admin
+    ports:
+      - "5050:80"
     depends_on:
       - postgres
     networks:

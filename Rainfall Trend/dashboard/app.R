@@ -7,6 +7,7 @@ library(reshape)
 library(zoo)
 library(ggplot2)
 library(DT)
+library(moments)
 
 tmap_mode("view")  # Enable interactive maps
 
@@ -109,6 +110,8 @@ ui <- dashboardPage(
             box(width = 12, title = "Select Climate Index", status = "primary", solidHeader = TRUE,
                 selectInput("climate_index", "Climate Index:",
                             choices = c("PRCPTOT", "CDD", "RxDday","Rnnmm","CWD","R95p","R99p","R95pTOT","R99pTOT")),
+                ##UI output for time scale
+                uiOutput("time_scale_ui"),
                 # NEW: lon/lat inputs (optional)
                 numericInput("sel_lon", "Longitude (optional):", value = NA),
                 numericInput("sel_lat", "Latitude (optional):", value = NA),
@@ -163,7 +166,6 @@ server <- function(input, output, session) {
       updateNumericInput(session, "station", value = st_ids[1], min = min(st_ids, na.rm = TRUE), max = max(st_ids, na.rm = TRUE))
     }
   })
-  
   ##-----------------------------Meta Data of the raster files-----------------------
   daily_dates <- reactive({
     req(r_daily())
@@ -641,6 +643,19 @@ server <- function(input, output, session) {
   })
   
   ###------------------------------------Climate Indices Parameters------------------------
+  
+  output$time_scale_ui <- renderUI({
+    req(input$climate_index)    
+    if (input$climate_index %in% c("PRCPTOT","RxDday","Rnnmm")) {       
+      radioButtons("index_time_scale", "Select Time Scale:",                    
+                   choices = c("Monthly", "Annual"),                    
+                   selected = "Monthly", inline = TRUE) 
+    }else { 
+      return(NULL) 
+        } 
+    })
+  
+  
   output$index_parameters <- renderUI({
     req(input$climate_index)
     if (input$climate_index == "RxDday") {
@@ -662,22 +677,58 @@ server <- function(input, output, session) {
     
     ## Example: PRCPTOT calculation
     if (input$climate_index == "PRCPTOT") {
-      req(input$threshold)
-      threshold <- as.numeric(input$threshold)
-      for (m in unique_months) {
-        month_idx <- which(month_group == m)
-        month_r <- r[[month_idx]]
-        vals <- extract(month_r, points)[,-1, drop = FALSE]
-        PRCPTOT_vals <- apply(vals, 1, function(x) sum(x[x >= threshold], na.rm = TRUE))
-        points$PRCPTOT <- PRCPTOT_vals
-        PRCPTOT_r <- rasterize(points, month_r[[1]], field = "PRCPTOT")
-        names(PRCPTOT_r) <- m
-        result_list[[m]] <- PRCPTOT_r
-      }
-      PRCPTOT_stack <- rast(result_list)
-      names(PRCPTOT_stack) <- unique_months
-      return(PRCPTOT_stack)
+      
+      req(input$threshold)  
+      
+      time_scale <- if (!is.null(input$index_time_scale)) input$index_time_scale else "Monthly"           
+      threshold <- as.numeric(input$threshold)             
+      
+      ## 1. Monthly PRCPTOT calculation
+      for (m in unique_months) {         
+        month_idx <- which(month_group == m)        
+        month_r <- r[[month_idx]]        
+        vals <- extract(month_r, points)[, -1, drop = FALSE]         
+        
+        PRCPTOT_vals <- apply(
+          vals, 
+          1, 
+          function(x) sum(x[x >= threshold], na.rm = TRUE)
+        )
+        
+        points$PRCPTOT <- PRCPTOT_vals       
+        PRCPTOT_r <- rasterize(points, month_r[[1]], field = "PRCPTOT")        
+        names(PRCPTOT_r) <- m         
+        result_list[[m]] <- PRCPTOT_r      
+      }      
+      
+      PRCPTOT_stack <- rast(result_list)       
+      names(PRCPTOT_stack) <- unique_months 
+      
+      ## 2. Annual PRCPTOT
+      if (time_scale == "Annual") {
+        
+        rain_values <- terra::extract(r,points)
+        rain_values <- rain_values[, -1]
+        
+        annual_PRCPTOT_fun <- function(precip_value, threshold) {
+          wet_days <- sum(precip_value[precip_value >= threshold])
+          return(wet_days)
+        }
+        
+        annual_vals <- apply(rain_values, 1, annual_PRCPTOT_fun, threshold = threshold)
+        
+        points$annual_PRCPTOT <- annual_vals
+        
+        annual_PRCPTOT_raster <- rasterize(points, r[[1]], field = "annual_PRCPTOT")
+        names(annual_PRCPTOT_raster) <- paste0("Annual_PRCPTOT_", input$year)
+        
+        return(annual_PRCPTOT_raster)
+      } 
+      else { 
+        return(PRCPTOT_stack)
+      } 
     }
+    
     
     ##----------------------CDD------------------------------
     else if (input$climate_index == "CDD") {
@@ -703,19 +754,19 @@ server <- function(input, output, session) {
     ##----------------------RxDday----------------------------
     else if (input$climate_index == "RxDday") {
       req(input$rolling_window)
+      # Check time scale (Default to Monthly if null)
+      time_scale <- if (!is.null(input$index_time_scale)) input$index_time_scale else "Monthly"
       roll_window <- as.numeric(input$rolling_window)
-      
+      # 1. Calculate Monthly Stack
       for (m in unique_months) {
         month_idx <- which(month_group == m)
         month_r <- r[[month_idx]]
         vals <- extract(month_r, points)[,-1, drop=FALSE]
-        
         roll_sum <- apply(vals, 1, function(x){
           if(length(x) >= roll_window){
             max(zoo::rollapply(x, width=roll_window, FUN=sum, align="left", na.rm=TRUE))
           } else NA
         })
-        
         points$RxDday <- roll_sum
         RxDday_raster <- rasterize(points, month_r[[1]], field = "RxDday")
         names(RxDday_raster) <- m
@@ -723,14 +774,35 @@ server <- function(input, output, session) {
       }
       RxDday_stack <- rast(result_list)
       names(RxDday_stack) <- unique_months
-      return(RxDday_stack)
+      # 2. Check for Annual Logic
+      if (time_scale == "Annual") {
+        # IMPORTANT: For RxDday, we must re-calculate on the full year data
+        # because a 5-day max event might happen across Jan 31 and Feb 1.
+        # Extract full year daily values
+        rain_values <- terra::extract(r, points)[, -1] # remove ID column
+        annual_RxDday_fun <- function(daily_precip, window) {
+          if(length(daily_precip) >= window){
+            max(zoo::rollapply(daily_precip, width=window, FUN=sum, align="left", na.rm=TRUE))
+          } else { NA }
+        }
+        annual_vals <- apply(rain_values, 1, annual_RxDday_fun, window = roll_window)
+        points$annual_RxDday <- annual_vals
+        # Create Raster
+        annual_RxDday_raster <- rasterize(points, r[[1]], field = "annual_RxDday")
+        names(annual_RxDday_raster) <- paste0("Annual_RxDday_", input$year)
+        return(annual_RxDday_raster)
+      } else {
+        return(RxDday_stack)
+      }
     }
     
     ##----------------------Rnnmm----------------------------
     else if (input$climate_index == "Rnnmm") {
       req(input$threshold)
+      # Check time scale
+      time_scale <- if (!is.null(input$index_time_scale)) input$index_time_scale else "Monthly"
       threshold <- as.numeric(input$threshold)
-      
+      # 1. Calculate Monthly Stack
       for (m in unique_months) {
         month_idx <- which(month_group == m)
         month_r <- r[[month_idx]]
@@ -743,9 +815,16 @@ server <- function(input, output, session) {
       }
       Rnnmm_stack <- rast(result_list)
       names(Rnnmm_stack) <- unique_months
-      return(Rnnmm_stack)
+      # 2. Check for Annual Logic
+      if (time_scale == "Annual") {
+        # Optimization: Annual count is just the SUM of monthly counts
+        Rnnmm_annual <- sum(Rnnmm_stack, na.rm = TRUE)
+        names(Rnnmm_annual) <- paste0("Annual_Rnnmm_", input$year)
+        return(Rnnmm_annual)
+      } else {
+        return(Rnnmm_stack)
+      }
     }
-    
     ##-------------------------CWD-----------------------------------
     else if(input$climate_index=="CWD"){
       req(input$threshold)
