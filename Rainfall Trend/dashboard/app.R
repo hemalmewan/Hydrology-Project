@@ -7,7 +7,6 @@ library(reshape)
 library(zoo)
 library(ggplot2)
 library(DT)
-library(moments)
 
 tmap_mode("view")  # Enable interactive maps
 
@@ -18,7 +17,9 @@ ui <- dashboardPage(
     sidebarMenu(
       menuItem("Raster Viewer", tabName = "raster", icon = icon("globe")),
       menuItem("Data Quality", tabName = "quality", icon = icon("chart-line")),
-      menuItem("Climate Indice", tabName = "climate_indice", icon = icon("cloud-rain"))
+      menuItem("Climate Indices", tabName = "climate_indice", icon = icon("cloud-rain")),
+      menuItem("Multi-Year-Analysis",tabName ="multi_year",icon = icon("history")),
+      menuItem("Trend Analysis", tabName = "", icon = icon("layer-group"))
     ),
     
     numericInput("year","Enter Year (e.g., 1951):",value = 1951,min=1900,max =2010),
@@ -28,7 +29,7 @@ ui <- dashboardPage(
                              "Monthly" = "monthly",
                              "Seasonal"="seasonal",
                              "Annual"="annual"),
-                 selected = "daily"),
+                 selected = "annual"),
     
     uiOutput("date_or_month_selector")
   ),
@@ -100,8 +101,60 @@ ui <- dashboardPage(
           )
         )
       ),
+      #------------TAB 3: Multi-Year Analysis (UPDATED)---------------------------------
+      tabItem(tabName = "multi_year",
+              fluidRow(
+                box(width = 3, title = "Settings", status = "primary", solidHeader = TRUE,
+                    
+                    # 1. Analysis Type Selection (Updated)
+                    radioButtons("multi_analysis_type", "Analysis Type:",
+                                 choices = c("Annual Total" = "annual", 
+                                             "Specific Month" = "monthly",
+                                             "Specific Season" = "seasonal"), # Added Seasonal
+                                 selected = "annual"),
+                    
+                    # 2a. Month Selector (Conditional: Monthly)
+                    conditionalPanel(
+                      condition = "input.multi_analysis_type == 'monthly'",
+                      selectInput("multi_month", "Select Month:",
+                                  choices = setNames(sprintf("%02d", 1:12), month.name), 
+                                  selected = "07") 
+                    ),
+                    
+                    # 2b. Season Selector (Conditional: Seasonal) - NEW
+                    conditionalPanel(
+                      condition = "input.multi_analysis_type == 'seasonal'",
+                      selectInput("multi_season", "Select Season:",
+                                  choices = c("Winter", "Pre-monsoon", "Monsoon", "Post-monsoon"),
+                                  selected = "Monsoon")
+                    ),
+                    
+                    hr(),
+                    
+                    # 3. Year Range Selection
+                    sliderInput("year_range", "Select Year Range:", 
+                                min = 1951, max = 2007, value = c(1951, 1956), step = 1),
+                    
+                    helpText("Displays comparison maps for the selected period."),
+                    hr(),
+                    
+                    # 4. Optional Location Input
+                    h4("Location Analysis (Optional)"),
+                    numericInput("multi_lon", "Longitude:", value = NA, step = 0.1),
+                    numericInput("multi_lat", "Latitude:", value = NA, step = 0.1),
+                    
+                    br(),
+                    actionButton("run_multi_year", "Generate Maps", icon = icon("globe"), 
+                                 class = "btn-success", style = "width:100%;")
+                ),
+                
+                box(width = 9, title = "Multi-Year Rainfall Grid", status = "primary", solidHeader = TRUE,
+                    plotOutput("multi_year_map", height = "900px") 
+                )
+              )
+      ),
       
-      #---- TAB 3: Climate Indices ----
+      #---- TAB 4: Climate Indices ----
       tabItem(
         tabName = "climate_indice",
         fluidRow(
@@ -110,8 +163,10 @@ ui <- dashboardPage(
             box(width = 12, title = "Select Climate Index", status = "primary", solidHeader = TRUE,
                 selectInput("climate_index", "Climate Index:",
                             choices = c("PRCPTOT", "CDD", "RxDday","Rnnmm","CWD","R95p","R99p","R95pTOT","R99pTOT")),
+                
                 ##UI output for time scale
                 uiOutput("time_scale_ui"),
+                
                 # NEW: lon/lat inputs (optional)
                 numericInput("sel_lon", "Longitude (optional):", value = NA),
                 numericInput("sel_lat", "Latitude (optional):", value = NA),
@@ -131,31 +186,37 @@ ui <- dashboardPage(
         )
       )
     )
+   )
   )
-)
-
 
 server <- function(input, output, session) {
   
+  
   ## ----------------------Load Raster--------------------------
+  
   r_daily <- reactive({
     req(input$year)
     nc_path<-paste0("C:/Hydrology-Project/Rainfall Trend/NCDF/Daily_nc_",input$year,".nc")
     validate(need(file.exists(nc_path), paste("NetCDF file not found:", nc_path)))
     rast(nc_path)
+    
   })
   
+  
+  
   ##------------------------Load CSV----------------------------
+  
   stations <- reactive({
     req(input$year)
     csv_path<-paste0("C:/Hydrology-Project/Rainfall Trend/CSV files/drf_",input$year,"_new2.csv")
     validate(need(file.exists(csv_path), paste("Station file not found:", csv_path)))
     read.csv(csv_path)
+    
   })
-  
   ##--------------------------Extract the coordinates-----------------------------
   pts <- reactive({
     req(stations(), r_daily())
+    if(nrow(stations())==0) return(NULL)
     vect(stations(), geom = c("lon", "lat"), crs = crs(r_daily()))
   })
   
@@ -166,6 +227,7 @@ server <- function(input, output, session) {
       updateNumericInput(session, "station", value = st_ids[1], min = min(st_ids, na.rm = TRUE), max = max(st_ids, na.rm = TRUE))
     }
   })
+  
   ##-----------------------------Meta Data of the raster files-----------------------
   daily_dates <- reactive({
     req(r_daily())
@@ -644,6 +706,7 @@ server <- function(input, output, session) {
   
   ###------------------------------------Climate Indices Parameters------------------------
   
+  
   output$time_scale_ui <- renderUI({
     req(input$climate_index)    
     if (input$climate_index %in% c("PRCPTOT","RxDday","Rnnmm")) {       
@@ -652,9 +715,8 @@ server <- function(input, output, session) {
                    selected = "Monthly", inline = TRUE) 
     }else { 
       return(NULL) 
-        } 
-    })
-  
+    } 
+  })
   
   output$index_parameters <- renderUI({
     req(input$climate_index)
@@ -848,10 +910,34 @@ server <- function(input, output, session) {
       
     }
     
+    
+    ##-------------------------CWD-----------------------------------
+    else if(input$climate_index=="CWD"){
+      req(input$threshold)
+      threshold <- as.numeric(input$threshold)
+      vals <- extract(r, points)[,-1, drop=FALSE]
+      
+      ##define the customize function
+      CWD<-function(daily_precip,threshold){
+        wet<-as.numeric(daily_precip)>=threshold
+        if(all(!wet)) return(0) ##no wet days all are dry days
+        rle_wet<-rle(wet)
+        max_cwd<-max(rle_wet$lengths[rle_wet$values])
+        
+        return(max_cwd)
+      }
+      cwd_values <- apply(vals, 1,CWD, threshold = threshold)
+      points$CWD <- cwd_values
+      CWD_raster <- rasterize(points, r[[1]], field = "CWD")
+      names(CWD_raster) <- "CWD"
+      return(CWD_raster)
+      
+    }
+    
     ##---------------------------------R95p-----------------------------------------
     else if(input$climate_index=="R95p"){
       ##read the 95th percentile value in the file
-      p95 <- readRDS("C:/Hydrology-Project/Rainfall Trend/scripts/p95_threshold.rds")
+      p95 <- readRDS("data/p95_threshold.rds")
       vals <- extract(r, points)[,-1, drop=FALSE]
       
       ##define the customize function
@@ -873,7 +959,7 @@ server <- function(input, output, session) {
     ##---------------------------------R99p-----------------------------------------
     else if(input$climate_index=="R99p"){
       ##read the 99th percentile value in the file
-      p99 <- readRDS("C:/Hydrology-Project/Rainfall Trend/scripts/p99_threshold.rds")
+      p99 <- readRDS("data/p99_threshold.rds")
       vals <- extract(r, points)[,-1, drop=FALSE]
       
       ##define the customize function
@@ -894,9 +980,9 @@ server <- function(input, output, session) {
     ##---------------------------------R95pTOT-----------------------------------------
     else if(input$climate_index=="R95pTOT"){
       ##read the annual PRCPTOT percentile value in the file
-      annual_PRCPTOT <- readRDS("C:/Hydrology-Project/Rainfall Trend/scripts/annual_PRCPTOT.rds")
+      annual_PRCPTOT <- readRDS("data/annual_PRCPTOT.rds")
       ##read the R95p value in the file
-      R95p <- readRDS("C:/Hydrology-Project/Rainfall Trend/scripts/R95_threshold.rds")
+      R95p <- readRDS("data/R95_threshold.rds")
       
       ##calculate the indices
       R95pTOT<-(100*R95p)/annual_PRCPTOT
@@ -911,9 +997,9 @@ server <- function(input, output, session) {
     ##------------------------------R99pTOT----------------------------------------------
     else if(input$climate_index=="R99pTOT"){
       ##read the annual PRCPTOT percentile value in the file
-      annual_PRCPTOT <- readRDS("C:/Hydrology-Project/Rainfall Trend/scripts/annual_PRCPTOT.rds")
+      annual_PRCPTOT <- readRDS("data/annual_PRCPTOT.rds")
       ##read the R99p value in the file
-      R99<- readRDS("C:/Hydrology-Project/Rainfall Trend/scripts/R99_threshold.rds")
+      R99<- readRDS("data/R99_threshold.rds")
       
       ##calculate the indices
       R99pTOT<-(100*R99)/annual_PRCPTOT
@@ -1012,6 +1098,158 @@ server <- function(input, output, session) {
     }
   })
   
+  ##------------------------------------------Multi-Year Analysis (UPDATED)-----------------------------------
+  multi_year_stack <- eventReactive(input$run_multi_year, {
+    req(input$year_range)
+    
+    years_seq <- seq(input$year_range[1], input$year_range[2])
+    result_list <- list()
+    
+    mode <- input$multi_analysis_type
+    target_month <- input$multi_month 
+    target_season <- input$multi_season
+    
+    # Define Season Definitions
+    season_list <- list(
+      "Winter"       = c(1, 2, 12),
+      "Pre-monsoon"  = c(3, 4, 5),
+      "Monsoon"      = c(6, 7, 8, 9),
+      "Post-monsoon" = c(10, 11)
+    )
+    
+    withProgress(message = 'Generating Maps', value = 0, {
+      for (i in seq_along(years_seq)) {
+        yr <- years_seq[i]
+        incProgress(1/length(years_seq), detail = paste("Processing:", yr))
+        
+        nc_path <- paste0("C:/Hydrology-Project/Rainfall Trend/NCDF/Daily_nc_", yr, ".nc")
+        
+        if (file.exists(nc_path)) {
+          r <- rast(nc_path)
+          
+          # --- ANNUAL ---
+          if (mode == "annual") {
+            r_sum <- app(r, sum, na.rm = TRUE)
+            names(r_sum) <- as.character(yr)
+            result_list[[as.character(yr)]] <- r_sum
+            
+            # --- MONTHLY ---
+          } else if (mode == "monthly") {
+            start_date <- as.Date(paste0(yr, "-01-01"))
+            dates <- seq(start_date, by = "day", length.out = nlyr(r))
+            
+            month_indices <- which(format(dates, "%m") == target_month)
+            
+            if (length(month_indices) > 0) {
+              r_sub <- r[[month_indices]]
+              r_sum <- app(r_sub, sum, na.rm = TRUE)
+              
+              m_name <- month.abb[as.numeric(target_month)]
+              names(r_sum) <- paste(m_name, yr)
+              result_list[[as.character(yr)]] <- r_sum
+            }
+            
+            # --- SEASONAL (NEW) ---
+          } else if (mode == "seasonal") {
+            start_date <- as.Date(paste0(yr, "-01-01"))
+            dates <- seq(start_date, by = "day", length.out = nlyr(r))
+            months <- as.numeric(format(dates, "%m"))
+            
+            # Get months required for selected season
+            req_months <- season_list[[target_season]]
+            
+            # Find indices
+            idx <- which(months %in% req_months)
+            
+            if (length(idx) > 0) {
+              r_sub <- r[[idx]]
+              r_sum <- app(r_sub, sum, na.rm = TRUE)
+              
+              names(r_sum) <- paste(target_season, yr)
+              result_list[[as.character(yr)]] <- r_sum
+            }
+          }
+        }
+      }
+    })
+    
+    validate(need(length(result_list) > 0, "No data files found for the selected range."))
+    rast(result_list)
+  })
+  
+  output$multi_year_map <- renderPlot({
+    req(multi_year_stack())
+    
+    r_stack <- multi_year_stack()
+    years <- names(r_stack)
+    
+    # Check for optional point
+    show_point <- !is.na(input$multi_lon) && !is.na(input$multi_lat)
+    
+    # Calculate GLOBAL breaks for consistent legend colors
+    range_vals <- minmax(r_stack)
+    gmin <- min(range_vals, na.rm=TRUE)
+    gmax <- max(range_vals, na.rm=TRUE)
+    if(gmin == gmax) gmax <- gmin + 1
+    
+    my_breaks <- pretty(c(gmin, gmax), n = 7)
+    
+    map_list <- list()
+    tmap_mode("plot") 
+    
+    # Loop to build individual maps
+    for (i in seq_along(years)) {
+      
+      yr_name <- years[i]
+      r_layer <- r_stack[[i]]
+      
+      # Base Map
+      m <- tm_shape(r_layer) +
+        tm_raster(
+          style = "fixed",
+          breaks = my_breaks,
+          palette = "YlGnBu", 
+          title = "Rainfall (mm)",
+          midpoint = NA,
+          legend.show = TRUE
+        ) +
+        tm_layout(
+          main.title = yr_name,
+          main.title.size = 1.0,
+          main.title.fontface = "bold",
+          frame = FALSE,
+          legend.outside = TRUE,
+          legend.outside.position = "right"
+        )
+      
+      # Add Point & Label
+      if (show_point) {
+        pt <- vect(data.frame(lon=input$multi_lon, lat=input$multi_lat), 
+                   geom=c("lon","lat"), crs=crs(r_layer))
+        
+        val_df <- terra::extract(r_layer, pt)
+        val <- val_df[1, 2] 
+        val_txt <- ifelse(is.na(val), "No Data", as.character(round(val, 0)))
+        
+        pt$map_label <- val_txt
+        
+        m <- m + 
+          tm_shape(pt) +
+          tm_symbols(col = "red", size = 0.6, shape = 21, border.col = "black") +
+          tm_text("map_label", 
+                  size = 1.1, 
+                  ymod = 0.8, 
+                  fontface = "bold", 
+                  bg.color = "white", 
+                  bg.alpha = 0.8)
+      }
+      
+      map_list[[i]] <- m
+    }
+    
+    # Arrange grid
+    tmap_arrange(map_list, ncol = 3)
+  })
   ###-------------------------------------Download Button------------------------------------
   output$download_index <- downloadHandler(
     filename = function() {
@@ -1026,5 +1264,3 @@ server <- function(input, output, session) {
 }
 
 shinyApp(ui, server)
-
- 

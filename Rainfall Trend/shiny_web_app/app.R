@@ -23,7 +23,9 @@ ui <- dashboardPage(
     sidebarMenu(
       menuItem("Raster Viewer", tabName = "raster", icon = icon("globe")),
       menuItem("Data Quality", tabName = "quality", icon = icon("chart-line")),
-      menuItem("Climate Indice", tabName = "climate_indice", icon = icon("cloud-rain"))
+      menuItem("Climate Indices", tabName = "climate_indice", icon = icon("cloud-rain")),
+      menuItem("Multi-Year-Analysis",tabName ="multi_year",icon = icon("history")),
+      menuItem("Trend Analysis", tabName = "", icon = icon("layer-group"))
     ),
     
     numericInput("year","Enter Year (e.g., 1951):",value = 1951,min=1900,max =2010),
@@ -33,7 +35,7 @@ ui <- dashboardPage(
                              "Monthly" = "monthly",
                              "Seasonal"="seasonal",
                              "Annual"="annual"),
-                 selected = "daily"),
+                 selected = "annual"),
     
     uiOutput("date_or_month_selector")
   ),
@@ -105,8 +107,36 @@ ui <- dashboardPage(
           )
         )
       ),
+      #------------TAB 3: Multi-Year Analysis---------------------------------
+      tabItem(tabName = "multi_year",
+              fluidRow(
+                box(width = 3, title = "Settings", status = "primary", solidHeader = TRUE,
+                    
+                    # 1. Year Range Selection
+                    sliderInput("year_range", "Select Year Range:", 
+                                min = 1951, max = 2007, value = c(1951, 1956), step = 1),
+                    
+                    helpText("Note: This will display Annual Precipitation maps for the selected years."),
+                    hr(),
+                    
+                    # 2. Optional Location Input
+                    h4("Location Analysis (Optional)"),
+                    numericInput("multi_lon", "Longitude:", value = NA, step = 0.1),
+                    numericInput("multi_lat", "Latitude:", value = NA, step = 0.1),
+                    
+                    br(),
+                    actionButton("run_multi_year", "Generate Annual Maps", icon = icon("globe"), 
+                                 class = "btn-success", style = "width:100%;")
+                ),
+                
+                box(width = 9, title = "Annual Rainfall Grid", status = "primary", solidHeader = TRUE,
+                    # Tmap output for the grid
+                    tmapOutput("multi_year_map", height = "800px")
+                )
+              )
+      ),
       
-      #---- TAB 3: Climate Indices ----
+      #---- TAB 4: Climate Indices ----
       tabItem(
         tabName = "climate_indice",
         fluidRow(
@@ -159,34 +189,54 @@ server <- function(input, output, session) {
     poolClose(pool)
     
   })
-  
+  ##--------------------------HELPER function to fetch the single year raster------------------
+  fetch_raster_from_db<-function(year){
+    ##read the nc file from the database
+    file_name<-paste0("Daily_nc_",year,".nc")
+    tmp_path<-file.path(tempdir(),file_name)
+    
+    ##check whather file exist or not
+    if(!file.exists(tmp_path)){
+      
+      ##  Fetch the BLOB from the Postgres
+      query<-"SELECT file_data FROM raster_storage WHERE year=$1"
+      result<-dbGetQuery(pool,query,params=list(input$year))
+      if(nrow(result)>0){
+        ##write the BLOB to the temp file
+        writeBin(result$file_data[[1]],tmp_path)
+      }else{
+        return(NULL)
+      }
+    }
+    
+     return(rast(tmp_path))
+  }
   ## ----------------------Load Raster--------------------------
   r_daily <- reactive({
     req(input$year)
-    nc_path<-paste0("data/NCDF/Daily_nc_",input$year,".nc")
-    validate(need(file.exists(nc_path), paste("NetCDF file not found:", nc_path)))
-    rast(nc_path)
+    r<-fetch_raster_from_db(input$year)
+    validate(need(!is.null(r),paste("Data for year",input$year,"not found.")))
+    r
   })
   
   ##------------------------Load CSV----------------------------
   stations <- reactive({
     req(input$year)
-    
-    ##csv_path<-paste0("data/CSV/drf_",input$year,"_new2.csv")
-    ##validate(need(file.exists(csv_path), paste("Station file not found:", csv_path)))
-    ##read.csv(csv_path)
-    
     ##define the query
     query <- paste0('SELECT * FROM "Daily_precipitation_', input$year, '";')
-    ##execute the query
-    data<-dbGetQuery(pool,query)
-    return(data)
+    ##try catch to handle missing tables elegantly
+    tryCatch({
+      dbGetQuery(pool,query)
+    },error=function(e){
+        return(data.frame(StationID=numeric(0),Lat=numeric(0),Lon=numeric(0)))
+      })
    
   })
   
   ##--------------------------Extract the coordinates-----------------------------
   pts <- reactive({
     req(stations(), r_daily())
+    if(nrow(stations())==0) return(NULL)
     vect(stations(), geom = c("lon", "lat"), crs = crs(r_daily()))
   })
   
@@ -1067,6 +1117,89 @@ server <- function(input, output, session) {
         )
     }
   })
+   
+   ##------------------------------------------Multi-Year Analysis-----------------------------------
+   multi_year_stack <- eventReactive(input$run_multi_year, {
+     req(input$year_range)
+     
+     years <- input$year_range[1]:input$year_range[2]
+     
+     # Limit number of years to prevent crash
+     if(length(years) > 12) {
+       showNotification("Warning: Limited to first 12 years for performance.", type = "warning")
+       years <- years[1:12]
+     }
+     
+     r_list <- list()
+     
+     withProgress(message = "Processing Annual Data...", value = 0, {
+       for(i in seq_along(years)) {
+         y <- years[i]
+         incProgress(1/length(years), detail = paste("Loading:", y))
+         
+         # 1. Fetch from Database
+         r <- fetch_raster_from_db(y)
+         
+         if(!is.null(r)) {
+           # 2. CRITICAL FIX: Force Coordinate System
+           # If the DB blob lost CRS info, this makes it visible again on the map
+           if(is.na(crs(r)) || crs(r) == "") { crs(r) <- "epsg:4326" }
+           
+           # 3. Calculate Annual Sum
+           r_annual <- app(r, sum, na.rm = TRUE)
+           
+           # 4. Name the layer
+           names(r_annual) <- as.character(y)
+           r_list[[as.character(y)]] <- r_annual
+         }
+       }
+     })
+     
+     validate(need(length(r_list) > 0, "No data found for selected range."))
+     rast(r_list)
+   })
+   
+   output$multi_year_map <- renderTmap({
+     req(multi_year_stack())
+     
+     stk <- multi_year_stack()
+     
+     # 1. Base Map with Grid Facets
+     tm <- tm_shape(stk) +
+       tm_raster(col.scale = tm_scale_continuous(values = "Blues"), 
+                 col.legend = tm_legend(title = "Annual Precip (mm)"), 
+                 alpha = 0.8) +
+       tm_facets(as.layers = FALSE, ncol = 3, free.coords = FALSE)
+     
+     # 2. Add Point Labels (Optional)
+     if(!is.na(input$multi_lon) && !is.na(input$multi_lat)) {
+       pt_df <- data.frame(lon=input$multi_lon, lat=input$multi_lat)
+       pt_vect <- vect(pt_df, geom=c("lon", "lat"), crs="epsg:4326")
+       
+       vals <- terra::extract(stk, pt_vect)
+       
+       pt_list <- list()
+       layer_names <- names(stk)
+       
+       for(y in layer_names) {
+         val <- vals[[y]]
+         val_txt <- if(is.na(val)) "NA" else paste0(round(val, 0), " mm")
+         v_tmp <- pt_vect
+         v_tmp$facets_variable <- y 
+         v_tmp$label <- val_txt
+         pt_list[[y]] <- v_tmp
+       }
+       pt_final <- do.call(rbind, pt_list)
+       
+       tm <- tm +
+         tm_shape(pt_final) +
+         tm_symbols(col = "red", size = 0.5, shape = 21) +
+         tm_text("label", ymod = -1, bg.color="white", bg.alpha=0.7) +
+         tm_facets(by = "facets_variable", as.layers = FALSE, free.coords = FALSE, drop.units=TRUE)
+     }
+     
+     tm
+   })
   
   ###-------------------------------------Download Button------------------------------------
   output$download_index <- downloadHandler(
