@@ -22,7 +22,17 @@ ui <- dashboardPage(
       menuItem("Trend Analysis", tabName = "", icon = icon("layer-group"))
     ),
     
-    numericInput("year","Enter Year (e.g., 1951):",value = 1951,min=1900,max =2010),
+    hr(),
+    
+    # --- 1. Country Selector ---
+    selectInput("country", "Select Country:",
+                choices = c("India", "Ghana", "Ethiopia"),
+                selected = "India"),
+    
+    hr(),
+    
+    # --- 2. Year Input (Dynamic limits handled by Server) ---
+    numericInput("year","Enter Year:", value = 1951, min=1951, max =2007),
     
     radioButtons("viewType", "Select Raster Type:",
                  choices = c("Daily" = "daily", 
@@ -190,13 +200,12 @@ ui <- dashboardPage(
   )
 
 server <- function(input, output, session) {
-  
-  
+
   ## ----------------------Load Raster--------------------------
   
   r_daily <- reactive({
     req(input$year)
-    nc_path<-paste0("C:/Hydrology-Project/Rainfall Trend/NCDF/Daily_nc_",input$year,".nc")
+    nc_path<-paste0("C:/Hydrology-Project/Rainfall Trend/NCDF/india/Daily_nc_",input$year,".nc")
     validate(need(file.exists(nc_path), paste("NetCDF file not found:", nc_path)))
     rast(nc_path)
     

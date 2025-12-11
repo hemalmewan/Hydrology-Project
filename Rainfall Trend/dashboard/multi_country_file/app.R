@@ -4,6 +4,37 @@ library(terra)
 library(tmap)
 library(DT)
 
+##------------------------------------Seasonal Variation of each Country--------------------------------
+country_config <- list(
+  "India" = list(
+    folder_name = "india",  # Folder name inside 'C:/Hydrology-Project/Rainfall Trend/NCDF/'
+    year_range  = c(1951, 2007),
+    seasons     = list(
+      "Winter"       = c(1, 2),        # Jan, Feb
+      "Pre-monsoon"  = c(3, 4, 5),     # Mar, Apr, May
+      "Monsoon"      = c(6, 7, 8, 9),  # Jun, Jul, Aug, Sep
+      "Post-monsoon" = c(10, 11, 12)   # Oct, Nov, Dec
+    )
+  ),
+  "Ghana" = list(
+    folder_name = "ghana",
+    year_range  = c(1981, 2024),
+    seasons     = list(
+      "Dry Season"= c(1, 2, 12,11), ##Jan,Feb,Dec and Nov
+      "Wet Season"=  c(3,4,5,6,7,9,10) ##March,Apr,May,June,July,Sept,Oct
+    )
+  ),
+  "Ethiopia" = list(
+    folder_name = "ethiopia",
+    year_range  = c(1981, 2024),
+    seasons     = list(
+      "Bega (Dry)"          = c(12, 1), # Dec-Jan
+      "Belg (Short Rains)"  = c(3, 4, 5),    # March,May,Apr
+      "Kiremt (Long Rains)" = c(6, 7, 8)     # Jun,July,Aug
+    )
+  )
+)
+
 tmap_mode("view") 
 
 ui <- dashboardPage(
@@ -19,28 +50,24 @@ ui <- dashboardPage(
     
     hr(),
     
-    # ---------------------------------------------------------
-    # 1. NEW: Country Selector (The Master Control)
-    # ---------------------------------------------------------
+    # 1. Country Selector
     selectInput("country", "Select Country:",
-                choices = c("India", "Ghana", "Ethiopia"),
+                choices = names(country_config), # Dynamically get names from config
                 selected = "India"),
     
     hr(),
     
-    numericInput("year","Enter Year (e.g., 1951):", value = 1951, min=1900, max =2024),
+    # 2. Year Input (Ranges updated by server)
+    numericInput("year","Enter Year:", value = 1951, min=1951, max=2007),
     
     radioButtons("viewType", "Select Raster Type:",
                  choices = c("Daily" = "daily", 
                              "Monthly" = "monthly",
                              "Seasonal"="seasonal",
                              "Annual"="annual"),
-                 selected = "annual"),
+                 selected = "annual"), # Default to Annual as requested
     
-    # ---------------------------------------------------------
-    # 2. UPDATED: Dynamic Selector
-    # This will display Date, Month, OR Country-Specific Season
-    # ---------------------------------------------------------
+    # 3. Dynamic Selector (Date / Month / Season)
     uiOutput("date_or_month_selector")
   ),
   
@@ -58,134 +85,212 @@ ui <- dashboardPage(
         )
       ),
       
-      #---- TAB 2: Data Quality ----
+      #---- TAB 2: Data Quality (Placeholder for now) ----
       tabItem(
         tabName = "quality",
-        fluidRow(
-          box(width = 12, title ="NetCDF Metadata", verbatimTextOutput("meta"))
-        ),
-        fluidRow(
-          box(width = 4, title ="Select Station",
-              # Note: Min/Max will need to be updated by server based on country CSV
-              numericInput("station", "Station ID:", value =1, min=1) 
-          ),
-          box(width = 8, title ="Monthly Time Series Plot",
-              plotOutput("timeseries_plot", height ="350px"))
-        ),
-        fluidRow(
-          box(width =6, title ="Monthly Precipitation Distribution",
-              plotOutput("monthly_boxplot", height ="350px")),
-          box(width =6, title ="Monthly Precipitation Amounts",
-              plotOutput("monthly_barplot", height ="350px"))
-        ),
-        fluidRow(
-          box(
-            width = 12, title = "Seasonal Statistics for Selected Station",
-            status = "warning", solidHeader = TRUE,
-            
-            actionButton("compute_seasonal_stats", "Compute Seasonal Stats", icon = icon("calculator")),
-            downloadButton("download_seasonal_stats", "Download CSV"),
-            br(), br(),
-            
-            # ---------------------------------------------------------
-            # 3. UPDATED: Dynamic Legend
-            # Replaced hardcoded HTML legend with a UI output so it 
-            # can explain "Kiremt" vs "Monsoon" automatically
-            # ---------------------------------------------------------
-            uiOutput("season_description_text"),
-            
-            div(style = "overflow-x:auto; width:100%;",
-                tableOutput("seasonal_stats_table")
-            )
-          )
-        )
+        h3("Data Quality Section (Connect your station CSV logic here)")
       ),
       
-      #---- TAB 3: Multi-Year Analysis ----
+      #---- TAB 3: Multi-Year Analysis (Simplified for this example) ----
       tabItem(tabName = "multi_year",
-              fluidRow(
-                box(width = 3, title = "Settings", status = "primary", solidHeader = TRUE,
-                    
-                    radioButtons("multi_analysis_type", "Analysis Type:",
-                                 choices = c("Annual Total" = "annual", 
-                                             "Specific Month" = "monthly",
-                                             "Specific Season" = "seasonal"),
-                                 selected = "annual"),
-                    
-                    # 2a. Month Selector (Standard for all countries)
-                    conditionalPanel(
-                      condition = "input.multi_analysis_type == 'monthly'",
-                      selectInput("multi_month", "Select Month:",
-                                  choices = setNames(sprintf("%02d", 1:12), month.name), 
-                                  selected = "07") 
-                    ),
-                    
-                    # ---------------------------------------------------------
-                    # 4. UPDATED: Dynamic Season Selector for Multi-Year
-                    # Replaced hardcoded selectInput with uiOutput
-                    # ---------------------------------------------------------
-                    conditionalPanel(
-                      condition = "input.multi_analysis_type == 'seasonal'",
-                      uiOutput("multi_year_season_selector") 
-                    ),
-                    
-                    hr(),
-                    
-                    sliderInput("year_range", "Select Year Range:", 
-                                min = 1951, max = 2007, value = c(1951, 1956), step = 1),
-                    
-                    helpText("Displays comparison maps for the selected period."),
-                    hr(),
-                    
-                    h4("Location Analysis (Optional)"),
-                    numericInput("multi_lon", "Longitude:", value = NA, step = 0.1),
-                    numericInput("multi_lat", "Latitude:", value = NA, step = 0.1),
-                    
-                    br(),
-                    actionButton("run_multi_year", "Generate Maps", icon = icon("globe"), 
-                                 class = "btn-success", style = "width:100%;")
-                ),
-                
-                box(width = 9, title = "Multi-Year Rainfall Grid", status = "primary", solidHeader = TRUE,
-                    plotOutput("multi_year_map", height = "900px") 
-                )
-              )
+              h3("Multi-Year Analysis Section")
       ),
       
-      #---- TAB 4: Climate Indices ----
+      #---- TAB 4: Climate Indices (Simplified for this example) ----
       tabItem(
         tabName = "climate_indice",
-        fluidRow(
-          column(
-            width =4,
-            box(width = 12, title = "Select Climate Index", status = "primary", solidHeader = TRUE,
-                selectInput("climate_index", "Climate Index:",
-                            choices = c("PRCPTOT", "CDD", "RxDday","Rnnmm","CWD","R95p","R99p","R95pTOT","R99pTOT")),
-                
-                uiOutput("time_scale_ui"),
-                
-                numericInput("sel_lon", "Longitude (optional):", value = NA),
-                numericInput("sel_lat", "Latitude (optional):", value = NA),
-                uiOutput("index_parameters"),
-                uiOutput("index_month_selector"),
-                actionButton("compute_index", "Compute Index", icon = icon("cogs")),
-                downloadButton("download_index", "Download Result")
-            ),
-            box(width = 12, title = "Description", status = "info", solidHeader = TRUE,
-                htmlOutput("index_description"))
-          ),
-          column(
-            width = 8,
-            box(width = 12, title = "Climate Index Result", status = "success", solidHeader = TRUE,
-                tmapOutput("index_map", height = "600px"))
-          )
-        )
+        h3("Climate Indices Section")
       )
     )
   )
 )
 
-# Dummy server to make it runnable for testing the UI
-server <- function(input, output, session) {}
 
+server <- function(input, output, session) {
+  ##-----------------------------------Country Configuration----------------------------
+  current_config <- reactive({
+    req(input$country)
+    country_config[[input$country]]
+  })
+  
+  observeEvent(input$country,{
+    req(current_config())
+    cfg <- current_config()
+    
+    # Update single year input
+    updateNumericInput(session, "year",
+                       value = cfg$year_range[1], # Reset to start year
+                       min = cfg$year_range[1],
+                       max = cfg$year_range[2])
+    
+    # Update slider (if used in other tabs)
+    updateSliderInput(session, "year_range",
+                      min = cfg$year_range[1],
+                      max = cfg$year_range[2],
+                      value = c(cfg$year_range[1], cfg$year_range[1] + 5))
+  })
+  
+  ##----------------------------------Load Daily Rasters--------------------------------
+  r_daily <- reactive({
+    req(input$country, input$year)
+    
+    cfg <- current_config()
+    
+    # Construct Path: e.g., C:/.../India/Daily_nc_1951.nc
+    # NOTE: Adjust base path if needed
+    nc_path <- paste0("C:/Hydrology-Project/Rainfall Trend/NCDF/", 
+                      cfg$folder_name, "/Daily_nc_", input$year, ".nc")
+    
+    validate(need(file.exists(nc_path), paste("NetCDF file not found:", nc_path)))
+    
+    rast(nc_path)
+  })
+  
+  ##-----------------------------calculate the number of dates--------------
+  daily_dates <- reactive({
+    req(r_daily(), input$year)
+    n <- nlyr(r_daily()) # Get number of layers (e.g., 365 or 366)
+    
+    # Generate sequence starting from Jan 1st of selected year
+    start_date <- as.Date(paste0(input$year, "-01-01"))
+    seq(start_date, by = "day", length.out = n)
+  })
+  
+  ##--------------------------------Select the Type of the raster----------------
+  output$date_or_month_selector <- renderUI({
+    req(daily_dates(), input$viewType)
+    
+    if (input$viewType == "daily") {
+      dates <- daily_dates()
+      dateInput("selected_day", "Select Date:", 
+                value = dates[1], min = min(dates), max = max(dates))
+      
+    } else if (input$viewType == "monthly") {
+      selectInput("selected_month", "Select Month:", choices = month.name)
+      
+    } else if (input$viewType == "seasonal") {
+      # Get country-specific season names
+      cfg <- current_config()
+      selectInput("selected_season", "Select Season:", 
+                  choices = names(cfg$seasons))
+      
+    } else {
+      return(NULL) # Nothing needed for Annual
+    }
+  })
+  ##---------------------------------Compute the Raster based view-------------------
+  current_raster_data <- reactive({
+    req(r_daily(), daily_dates(),input$viewType)
+    
+    r <- r_daily()
+    dates <- daily_dates()
+    cfg <- current_config()
+    
+    r_out <- NULL
+    title_txt <- ""
+    file_name <- ""
+    
+    # --- A. ANNUAL (Default) ---
+    if (input$viewType == "annual") {
+      r_out <- sum(r, na.rm = TRUE)
+      title_txt <- paste("Annual Rainfall -", input$country, input$year)
+      file_name <- paste0("Annual_", input$country, "_", input$year)
+      
+      # --- B. DAILY ---
+    } else if (input$viewType == "daily") {
+      req(input$selected_day)
+      # Find index of selected day
+      idx <- which(dates == as.Date(input$selected_day))
+      validate(need(length(idx) > 0, "Selected date not found in file."))
+      
+      r_out <- r[[idx]]
+      title_txt <- paste("Daily Rainfall -", input$selected_day)
+      file_name <- paste0("Daily_", input$selected_day)
+      
+      # --- C. MONTHLY ---
+    } else if (input$viewType == "monthly") {
+      req(input$selected_month)
+      # Identify month index (1-12)
+      target_m_idx <- match(input$selected_month, month.name)
+      
+      # Extract layers for that month
+      date_months <- as.numeric(format(dates, "%m"))
+      
+      layer_indices <- which(date_months == target_m_idx)
+      validate(need(length(layer_indices) > 0, "No data for this month."))
+      
+      # Subset and Sum
+      r_sub <- r[[layer_indices]]
+      r_out <- sum(r_sub, na.rm = TRUE)
+      
+      title_txt <- paste("Monthly Rainfall -", input$selected_month, input$year)
+      file_name <- paste0("Monthly_", input$selected_month, "_", input$year)
+      
+      # --- D. SEASONAL (Country Specific) ---
+    } else if (input$viewType == "seasonal") {
+      req(input$selected_season)
+      
+      # Get the list of month numbers for the selected season
+      target_months <- cfg$seasons[[input$selected_season]]
+      
+      # Identify layers matching these months
+      date_months <- as.numeric(format(dates, "%m"))
+      layer_indices <- which(date_months %in% target_months)
+      
+      validate(need(length(layer_indices) > 0, paste("No data found for season:", input$selected_season)))
+      
+      # Subset and Sum
+      r_sub <- r[[layer_indices]]
+      r_out <- sum(r_sub, na.rm = TRUE)
+      
+      title_txt <- paste("Seasonal Rainfall -", input$selected_season, input$year)
+      file_name <- paste0("Seasonal_", input$selected_season, "_", input$year)
+    }
+    
+    list(r = r_out, title = title_txt, name = file_name)
+  })
+  
+  ##--------------------------------------------Output Map---------------------
+  output$map <- renderTmap({
+    data <- current_raster_data()
+    req(data$r)
+    
+    # Optional: Disaggregate for smoother look (visual only)
+    r_show <- terra::disagg(data$r, fact = 5, method = "bilinear")
+
+    
+    #Create a dynamic legend title based on the user's selection
+    legend_label <- switch(input$viewType,
+      "daily"    = paste0("Daily Precip:", input$selected_day),
+      "monthly"  = paste0("Monthly Precip:", input$selected_month),
+      "seasonal" = paste0("Seasonal Precip:", input$selected_season),
+      "annual"   = paste0("Annual Precip:", input$year)
+    )
+    
+    names(r_show) <- "Precipitation (mm)"
+    
+    ##render map view
+    tm_shape(r_show) +
+      tm_raster(
+        title = legend_label,    # Sets the Legend Title
+        palette = "Blues",       # Standard tmap color palette
+        style = "cont",          # Continuous scale
+        alpha = 0.8
+      ) +
+      tm_layout(
+        main.title = data$title, 
+        main.title.position = "center"
+      )
+  })
+  
+  ##---------------------------------------Donwload the Map---------------------------
+  output$download_raster_map <- downloadHandler(
+    filename = function() { paste0(current_raster_data()$name, ".tif") },
+    content = function(file) {
+      req(current_raster_data()$r)
+      writeRaster(current_raster_data()$r, file, overwrite = TRUE)
+    }
+  )
+  
+}
 shinyApp(ui, server)
