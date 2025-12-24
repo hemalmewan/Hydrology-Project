@@ -47,13 +47,5 @@ for (year in 1951:2007) {
   
 }
 
-print("Tables in the Database:")
-##check if it's there
-print(dbListTables(con))
-##Disconnect the connection
-dbDisconnect(con)
 
-year<-1951
-query <- paste0('SELECT * FROM "Daily_precipitation_', year, '";')
-dbGetQuery(con, query)
 

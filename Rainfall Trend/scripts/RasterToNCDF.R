@@ -48,5 +48,12 @@ for (year in 1981:2024) {
 
 cat("Finish Processing all the year!!!!!!!!!!")
 
+path<-"C:/Hydrology-Project/Rainfall Trend/NCDF/ghana/Daily_nc_1981.nc"
+r<-rast(path)
 
+values(r)
 
+val<-values(sum(r,na.rm = TRUE))
+
+val<-val[na.omit(val)]
+sort(val)

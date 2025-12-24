@@ -6,11 +6,11 @@ RUN apt-get update && apt-get install -y \
     && rm -rf /var/lib/apt/lists/*
 
 ##install R packages
-RUN R -e "install.packages(c('shiny','shinydashboard','reshape','zoo','DST','RPostgres','pool','moments','DT','terra','ggplot2'), repos='https://cran.rstudio.com/')"
+RUN R -e "install.packages(c('shiny','shinydashboard','zoo','DBI','RPostgres','pool','DT','terra','tmap','future','furrr'), repos='https://cran.rstudio.com/')"
 
 ##copy app code and data into the docker image
 COPY app.R /srv/shiny-server/
-COPY data/ /srv/shiny-server/data/
+
 
 ##Expose the port for the shiny app
 EXPOSE 3838
