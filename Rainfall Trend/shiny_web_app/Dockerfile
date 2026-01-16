@@ -6,7 +6,7 @@ RUN apt-get update && apt-get install -y \
     && rm -rf /var/lib/apt/lists/*
 
 ##install R packages
-RUN R -e "install.packages(c('shiny','shinydashboard','zoo','DBI','RPostgres','pool','DT','terra','tmap','future','furrr'), repos='https://cran.rstudio.com/')"
+RUN R -e "install.packages(c('shiny','shinydashboard','zoo','DBI','RPostgres','pool','DT','terra','tmap','future','furrr','Kendall'), repos='https://cran.rstudio.com/')"
 
 ##copy app code and data into the docker image
 COPY app.R /srv/shiny-server/

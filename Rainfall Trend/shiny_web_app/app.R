@@ -7,6 +7,7 @@ library(zoo)
 library(DBI)
 library(RPostgres)
 library(pool)
+library(Kendall)
 
 # ==============================================================================
 # DATABASE CONNECTION
@@ -31,7 +32,7 @@ country_config <- list(
   "India" = list(
     folder_name = "india",
     year_range  = c(1951, 2007),
-    default_loc = c(lat = 20.5, lon = 78.9),
+    default_loc = list(lat = 20.5, lon = 78.9),
     seasons     = list(
       "Winter"       = c(1, 2),
       "Pre-monsoon"  = c(3, 4, 5),
@@ -42,7 +43,7 @@ country_config <- list(
   "Ghana" = list(
     folder_name = "ghana",
     year_range  = c(1981, 2024),
-    default_loc = c(lat = 7.9, lon = -1.0),
+    default_loc = list(lat = 7.9, lon = -1.0),
     seasons     = list(
       "Dry Season" = c(1, 2, 12, 11),
       "Wet Season" = c(3, 4, 5, 6, 7, 9, 10)
@@ -51,7 +52,7 @@ country_config <- list(
   "Ethiopia" = list(
     folder_name = "ethiopia",
     year_range  = c(1981, 2024),
-    default_loc = c(lat = 9.1, lon = 40.4),
+    default_loc = list(lat = 9.1, lon = 40.4),
     seasons     = list(
       "Bega (Dry)"           = c(12, 1),
       "Belg (Short Rains)"  = c(3, 4, 5),
@@ -59,6 +60,42 @@ country_config <- list(
     )
   )
 )
+
+# --- Trend Calculation Helper ---
+calculate_mk_trend_logic <- function(ts_stack) {
+  # Define the function to run on every single pixel
+  mk_pixel_fun <- function(x) {
+    # If any data is missing in the time series, return NA
+    if (any(is.na(x))) return(c(NA, NA)) 
+    
+    # Run Mann-Kendall Test
+    tryCatch({
+      mk <- Kendall::MannKendall(x)
+      return(c(mk$tau[1], mk$sl[1])) # Return Tau and P-value
+    }, error = function(e) return(c(NA, NA)))
+  }
+  
+  # Apply function to the raster stack using C++ optimization
+  trend_result <- terra::app(ts_stack, mk_pixel_fun)
+  names(trend_result) <- c("Tau", "P_Value")
+  return(trend_result)
+}
+
+
+# --- Downsampling Helper ---
+# PREVENTS CRASHES: Reduces resolution for display only if the raster is too big
+downsample_for_map <- function(r) {
+  if (ncell(r) > 500000) {
+    fact <- floor(sqrt(ncell(r) / 500000))
+    if (fact > 1) {
+      return(terra::aggregate(r, fact = fact, fun = mean, na.rm = TRUE))
+    }
+  }
+  return(r)
+}
+
+
+
 
 tmap_mode("view") 
 
@@ -250,7 +287,58 @@ ui <- dashboardPage(
                                                 plotOutput("multi_year_index_plot", height = "750px")
                                          )
                                        )
+                              ),
+                              # --- SUBTAB 3: Trend Analysis (NEW) ---
+                              tabPanel("Trend Analysis", icon = icon("chart-area"), 
+                                       br(),
+                                       fluidRow(
+                                         # --- Left Control Panel ---
+                                         column(width = 3,
+                                                wellPanel(style = "background: #ffffff; border-top: 3px solid #f39c12;", # Custom styled card
+                                                          
+                                                          # 1. Header
+                                                          h4("Trend Settings", style = "border-bottom: 1px solid #eee; padding-bottom: 10px; margin-top: 0;"),
+                                                          
+                                                          # 2. Time Range Inputs (Unique IDs: trend_*)
+                                                          numericInput("trend_start_year", "Start Year:", value = 1951, min = 1951, max = 2007),
+                                                          numericInput("trend_end_year", "End Year:", value = 2007, min = 1951, max = 2007),
+                                                          
+                                                          hr(),
+                                                          
+                                                          # 3. Granularity Selection
+                                                          selectInput("trend_time_scale", "Analysis Scale:", 
+                                                                      choices = c("Annual", "Seasonal", "Monthly"), 
+                                                                      selected = "Annual"),
+                                                          
+                                                          # 4. Conditional Inputs (Only show when relevant)
+                                                          conditionalPanel(
+                                                            condition = "input.trend_time_scale == 'Seasonal'",
+                                                            uiOutput("ui_trend_season") # Need to create this in server
+                                                          ),
+                                                          conditionalPanel(
+                                                            condition = "input.trend_time_scale == 'Monthly'",
+                                                            selectInput("trend_month", "Select Month:", choices = month.name)
+                                                          ),
+                                                          
+                                                          br(),
+                                                          
+                                                          # 5. Calculation Button (Styled Orange for distinction)
+                                                          actionButton("run_trend", "Calculate Mann-Kendall", 
+                                                                       icon = icon("calculator"), 
+                                                                       class = "btn-warning", # Orange color
+                                                                       style = "width: 100%; font-weight: bold; color: white;")
+                                                )
+                                         ),
+                                         
+                                         # --- Right Map Panel ---
+                                         column(width = 9,
+                                                box(width = 12, title = "Spatial Trend (Tau)", status = "warning", solidHeader = FALSE,
+                                                    tmapOutput("trend_map", height = "750px")
+                                                )
+                                         )
+                                       )
                               )
+                              
                   )
                 )
               )
@@ -337,8 +425,8 @@ server <- function(input, output, session) {
     
     # Update Standard Inputs (Viewer)
     updateNumericInput(session, "year", value = cfg$year_range[1], min = cfg$year_range[1], max = cfg$year_range[2])
-    updateNumericInput(session, "sidebar_lat", value = cfg$default_loc["lat"])
-    updateNumericInput(session, "sidebar_lon", value = cfg$default_loc["lon"])
+    updateNumericInput(session, "sidebar_lat", value = cfg$default_loc[["lat"]])
+    updateNumericInput(session, "sidebar_lon", value = cfg$default_loc[["lon"]])
     
     # Update Multi-Year Inputs (Tab 1: Visualization)
     updateNumericInput(session, "vis_start_year", value = cfg$year_range[1], min = cfg$year_range[1], max = cfg$year_range[2])
@@ -347,6 +435,18 @@ server <- function(input, output, session) {
     # Update Multi-Year Inputs (Tab 2: Indices)
     updateNumericInput(session, "idx_start_year", value = cfg$year_range[1], min = cfg$year_range[1], max = cfg$year_range[2])
     updateNumericInput(session, "idx_end_year", value = min(cfg$year_range[1]+5, cfg$year_range[2]), min = cfg$year_range[1], max = cfg$year_range[2])
+    
+    # 4. ADD THIS: Update Trend Analysis Inputs
+    # For trends, we usually default to the FULL range (start to end)
+    updateNumericInput(session, "trend_start_year", 
+                       value = cfg$year_range[1], 
+                       min = cfg$year_range[1], 
+                       max = cfg$year_range[2])
+    
+    updateNumericInput(session, "trend_end_year", 
+                       value = cfg$year_range[2],  # Default to the last available year
+                       min = cfg$year_range[1], 
+                       max = cfg$year_range[2])
   })
   
   output$ui_multi_season <- renderUI({
@@ -810,6 +910,98 @@ server <- function(input, output, session) {
     tm
   })
   
+  
+  # --- Trend Analysis Reactive ---
+  trend_stack_result <- eventReactive(input$run_trend, {
+    req(input$trend_start_year, input$trend_end_year)
+    
+    # Validation
+    validate(need((input$trend_end_year - input$trend_start_year) >= 2, "Need at least 3 years of data to calculate a trend."))
+    
+    cfg <- current_config()
+    year_seq <- input$trend_start_year:input$trend_end_year
+    scale <- input$trend_time_scale
+    
+    # Determine target months
+    target_months <- 1:12
+    if (scale == "Seasonal") {
+      req(input$trend_season_select)
+      target_months <- cfg$seasons[[input$trend_season_select]]
+    } else if (scale == "Monthly") {
+      req(input$trend_month)
+      target_months <- which(month.name == input$trend_month)
+    }
+    
+    # 1. Fetch Time Series Stack (Sequential & Inline)
+    ts_stack_list <- list()
+    
+    withProgress(message = "Fetching Time Series...", value = 0, {
+      for(i in seq_along(year_seq)) {
+        yr <- year_seq[i]
+        incProgress(0.5/length(year_seq), detail = paste("Fetching:", yr))
+        
+        # --- INLINE FETCHING LOGIC START ---
+        query <- "SELECT file_data FROM raster_storage WHERE country = $1 AND year = $2"
+        res <- dbGetQuery(db_pool, query, params = list(tolower(input$country), yr))
+        
+        if(nrow(res) > 0) {
+          tmp <- tempfile(fileext = ".nc")
+          writeBin(res$file_data[[1]], tmp)
+          r_daily_yr <- rast(tmp)
+          if(crs(r_daily_yr) == "") crs(r_daily_yr) <- "EPSG:4326"
+          
+          dates <- seq(as.Date(paste0(yr, "-01-01")), by = "day", length.out = nlyr(r_daily_yr))
+          months_idx <- as.numeric(format(dates, "%m"))
+          relevant_layers_idx <- which(months_idx %in% target_months)
+          
+          if(length(relevant_layers_idx) > 0) {
+            r_subset <- r_daily_yr[[relevant_layers_idx]]
+            r_sum <- sum(r_subset, na.rm = TRUE)
+            names(r_sum) <- paste(yr)
+            ts_stack_list[[as.character(yr)]] <- r_sum
+          }
+        }
+        # --- INLINE FETCHING LOGIC END ---
+      }
+    })
+    
+    validate(need(length(ts_stack_list) > 2, "Insufficient data found for the selected period."))
+    full_ts_stack <- rast(ts_stack_list)
+    
+    # 2. Calculate Mann-Kendall Trend
+    withProgress(message = "Calculating Trends...", value = 0.6, {
+      result <- calculate_mk_trend_logic(full_ts_stack)
+    })
+    
+    return(result)
+  })
+  
+  output$trend_map <- renderTmap({
+    req(trend_stack_result())
+    
+    # Get the calculated result (Layer 1 is Tau, Layer 2 is P-Value)
+    res_stack <- trend_stack_result()
+    tau_layer <- res_stack[["Tau"]]
+    
+    # 1. Downsample for speed (Critical for large areas)
+    view_layer <- downsample_for_map(tau_layer)
+    
+    # 2. Visualization Logic
+    # palette = "-RdBu": Reversed Red-Blue. 
+    # Blue = Positive Trend (Wetter), Red = Negative Trend (Drier).
+    
+    tm_shape(view_layer) +
+      tm_raster(style = "cont", 
+                palette = "-RdBu", 
+                midpoint = 0, 
+                breaks = c(-1, -0.5, 0, 0.5, 1), 
+                title = "Trend Strength (Tau)") +
+      tm_layout(main.title = paste("Mann-Kendall Trend:", input$trend_start_year, "-", input$trend_end_year),
+                legend.position = c("right", "bottom"),
+                frame = FALSE)
+  })
+  
+  
   output$download_index <- downloadHandler(
     filename = function() { 
       suf <- if(input$index_scale == "monthly") input$selected_index_month else "Annual"
@@ -822,6 +1014,13 @@ server <- function(input, output, session) {
       writeRaster(to_save, file, overwrite = TRUE)
     }
   )
+  
+  # --- VITAL FIX: Suspend When Hidden = FALSE ---
+  outputOptions(output, "trend_map", suspendWhenHidden = FALSE)
+  outputOptions(output, "multi_year_raster_plot", suspendWhenHidden = FALSE)
+  outputOptions(output, "multi_year_index_plot", suspendWhenHidden = FALSE)
+  outputOptions(output, "map", suspendWhenHidden = FALSE)
+  outputOptions(output, "index_map", suspendWhenHidden = FALSE)
 }
 
 shinyApp(ui, server)
