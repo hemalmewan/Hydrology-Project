@@ -977,28 +977,22 @@ server <- function(input, output, session) {
   })
   
   output$trend_map <- renderTmap({
+    # 1. Ensure data is ready
     req(trend_stack_result())
     
-    # Get the calculated result (Layer 1 is Tau, Layer 2 is P-Value)
+    # 2. VITAL FIX: Only render if the user is actually on the Trend tab.
+    # This prevents the map from drawing into a hidden (0-pixel) container.
+    req(input$multi_year_subtabs == "Trend Analysis")
+    
     res_stack <- trend_stack_result()
-    tau_layer <- res_stack[["Tau"]]
+    view_layer <- downsample_for_map(res_stack[["Tau"]])
     
-    # 1. Downsample for speed (Critical for large areas)
-    view_layer <- downsample_for_map(tau_layer)
-    
-    # 2. Visualization Logic
-    # palette = "-RdBu": Reversed Red-Blue. 
-    # Blue = Positive Trend (Wetter), Red = Negative Trend (Drier).
-    
+    # 3. Visualization Logic (Fixed 'breaks' error)
     tm_shape(view_layer) +
-      tm_raster(style = "cont", 
-                palette = "-RdBu", 
-                midpoint = 0, 
-                breaks = c(-1, -0.5, 0, 0.5, 1), 
-                title = "Trend Strength (Tau)") +
-      tm_layout(main.title = paste("Mann-Kendall Trend:", input$trend_start_year, "-", input$trend_end_year),
-                legend.position = c("right", "bottom"),
-                frame = FALSE)
+      tm_raster(col.scale = tm_scale_continuous(values = "-brewer.rd_bu", midpoint = 0), 
+                col.legend = tm_legend(title = "Trend Strength (Tau)", position = tm_pos_in("right", "bottom"))) +
+      tm_title(paste("Mann-Kendall Trend:", input$trend_start_year, "-", input$trend_end_year)) +
+      tm_layout(frame = FALSE)
   })
   
   
@@ -1015,12 +1009,7 @@ server <- function(input, output, session) {
     }
   )
   
-  # --- VITAL FIX: Suspend When Hidden = FALSE ---
-  outputOptions(output, "trend_map", suspendWhenHidden = FALSE)
-  outputOptions(output, "multi_year_raster_plot", suspendWhenHidden = FALSE)
-  outputOptions(output, "multi_year_index_plot", suspendWhenHidden = FALSE)
-  outputOptions(output, "map", suspendWhenHidden = FALSE)
-  outputOptions(output, "index_map", suspendWhenHidden = FALSE)
+
 }
 
 shinyApp(ui, server)

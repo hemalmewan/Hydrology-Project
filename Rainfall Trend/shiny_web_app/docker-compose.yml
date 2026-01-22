@@ -6,9 +6,9 @@ services:
     image: postgis/postgis:latest ##PostgreSQL with Spatial extentions
     container_name: postgres-server
     environment:
-      - POSTGRES_USER=shinyuser
-      - POSTGRES_PASSWORD=shiny_password
-      - POSTGRES_DB=shinydb
+      - POSTGRES_USER=${DB_USER}
+      - POSTGRES_PASSWORD=${DB_PASS}
+      - POSTGRES_DB=${DB_NAME}
     ports:
       - "5432:5432"
     volumes: 
@@ -16,10 +16,12 @@ services:
     networks: 
       - rainfall-trend
     
-  ## 2. The Shiny App Service
-  shiny_app:
+  ## 2. Define Three shiny app instances
+
+  ## First shiny app instance
+  climate_app_1:
     build: .
-    container_name: climate-shiny-app
+    container_name: climate-shiny-app_1
     restart: always
     ports:
       - "3838:3838"
@@ -27,20 +29,78 @@ services:
       - postgres
     networks:
       - rainfall-trend
+    environment:
+      - DB_HOST=postgres
+      - DB_USER=${DB_USER}
+      - DB_NAME=${DB_NAME}
+      - DB_PASSWORD=${DB_PASS}
+  
+  ## Second shiny app instance
+  climate_app_2:
+    build: .
+    container_name: climate-shiny-app_2
+    restart: always
+    ports:
+      - "3839:3838"
+    depends_on:
+      - postgres
+    networks:
+      - rainfall-trend
+    environment:
+      - DB_HOST=${DB_HOST}
+      - DB_USER=${DB_USER}
+      - DB_NAME=${DB_NAME}
+      - DB_PASSWORD=${DB_PASS}
+    
+    ## Third shiny app instance
+  climate_app_3:
+    build: .
+    container_name: climate-shiny-app_3
+    restart: always
+    ports:
+      - "3840:3838"
+    depends_on:
+      - postgres
+    networks:
+      - rainfall-trend
+    environment:
+      - DB_HOST=${DB_HOST}
+      - DB_USER=${DB_USER}
+      - DB_NAME=${DB_NAME}
+      - DB_PASSWORD=${DB_PASS}
 
   ##3. pgadmin -The Databse viewer
   pgadmin:
     image: dpage/pgadmin4
     container_name: pgadmin-container
     environment:
-      - PGADMIN_DEFAULT_EMAIL=admin@admin.com
-      - PGADMIN_DEFAULT_PASSWORD=admin
+      - PGADMIN_DEFAULT_EMAIL=${ADMIN_EMAIL}
+      - PGADMIN_DEFAULT_PASSWORD=${ADMIN_PASSWORD}
     ports:
       - "5050:80"
     depends_on:
-      - postgres
+      - postgres 
     networks:
       - rainfall-trend
+  
+  ## 4. Nginx (Load Balancer)
+  nginx:
+    image: nginx:latest
+    container_name: production-nginx
+    restart: always
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro\
+    depends_on:
+      - climate_app_1
+      - climate_app_2
+      - climate_app_3
+    networks:
+      - rainfall-trend
+    
+       
 
 ##Define the network connecting the two
 networks:
