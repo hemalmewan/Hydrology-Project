@@ -347,9 +347,6 @@ ui <- dashboardPage(
   )
 )
 
-# ==============================================================================
-# SERVER
-# ==============================================================================
 server <- function(input, output, session) {
   
   # --- Helper Function: Index Calculation Logic ---
@@ -375,7 +372,6 @@ server <- function(input, output, session) {
       })) 
     }
     else if (idx_type %in% c("R95p", "R99p", "R95pTOT", "R99pTOT")) {
-      # Baseline Fetch Logic (Simplified for example)
       base_start <- year_range[1]
       base_end <- min(base_start + 29, year_range[2])
       baseline_years <- base_start:base_end
@@ -423,36 +419,31 @@ server <- function(input, output, session) {
     req(current_config())
     cfg <- current_config()
     
-    # Update Standard Inputs (Viewer)
     updateNumericInput(session, "year", value = cfg$year_range[1], min = cfg$year_range[1], max = cfg$year_range[2])
     updateNumericInput(session, "sidebar_lat", value = cfg$default_loc[["lat"]])
     updateNumericInput(session, "sidebar_lon", value = cfg$default_loc[["lon"]])
     
-    # Update Multi-Year Inputs (Tab 1: Visualization)
     updateNumericInput(session, "vis_start_year", value = cfg$year_range[1], min = cfg$year_range[1], max = cfg$year_range[2])
     updateNumericInput(session, "vis_end_year", value = min(cfg$year_range[1]+5, cfg$year_range[2]), min = cfg$year_range[1], max = cfg$year_range[2])
     
-    # Update Multi-Year Inputs (Tab 2: Indices)
     updateNumericInput(session, "idx_start_year", value = cfg$year_range[1], min = cfg$year_range[1], max = cfg$year_range[2])
     updateNumericInput(session, "idx_end_year", value = min(cfg$year_range[1]+5, cfg$year_range[2]), min = cfg$year_range[1], max = cfg$year_range[2])
     
-    # 4. ADD THIS: Update Trend Analysis Inputs
-    # For trends, we usually default to the FULL range (start to end)
-    updateNumericInput(session, "trend_start_year", 
-                       value = cfg$year_range[1], 
-                       min = cfg$year_range[1], 
-                       max = cfg$year_range[2])
-    
-    updateNumericInput(session, "trend_end_year", 
-                       value = cfg$year_range[2],  # Default to the last available year
-                       min = cfg$year_range[1], 
-                       max = cfg$year_range[2])
+    updateNumericInput(session, "trend_start_year", value = cfg$year_range[1], min = cfg$year_range[1], max = cfg$year_range[2])
+    updateNumericInput(session, "trend_end_year", value = cfg$year_range[2], min = cfg$year_range[1], max = cfg$year_range[2])
   })
   
   output$ui_multi_season <- renderUI({
     req(current_config())
     cfg <- current_config()
     selectInput("multi_season_select", "Select Season:", choices = names(cfg$seasons))
+  })
+  
+  # --- ADDED: UI Output for Trend Season Selection ---
+  output$ui_trend_season <- renderUI({
+    req(current_config())
+    cfg <- current_config()
+    selectInput("trend_season_select", "Select Season:", choices = names(cfg$seasons))
   })
   
   # --- Data Loading (Standard Viewer) ---
@@ -555,9 +546,12 @@ server <- function(input, output, session) {
       if(input$multi_year_subtabs == "Raster Visualization") {
         req(multi_year_stack())
         target_raster <- multi_year_stack()[[nlyr(multi_year_stack())]]
-      } else {
+      } else if (input$multi_year_subtabs == "Climate Indices") {
         req(multi_year_index_stack())
         target_raster <- multi_year_index_stack()[[nlyr(multi_year_index_stack())]]
+      } else if (input$multi_year_subtabs == "Trend Analysis") {
+        req(trend_stack_result())
+        target_raster <- trend_stack_result()[["Tau"]] # Extract from Tau layer for Trend
       }
     }
     if(is.null(target_raster)) return(NA)
@@ -570,8 +564,14 @@ server <- function(input, output, session) {
   output$point_value_box <- renderUI({
     req(input$btn_get_value)
     val <- extracted_value_smart()
-    label <- if(input$tabs == "climate_indice") "Index Value:" else "Precipitation:"
-    txt <- if(is.na(val)) "No Data" else paste(round(val, 2))
+    
+    # Dynamic Label Logic
+    label <- "Value:"
+    if(input$tabs == "climate_indice") label <- "Index Value:"
+    else if(input$tabs == "raster") label <- "Precipitation:"
+    else if(input$tabs == "multi_year" && input$multi_year_subtabs == "Trend Analysis") label <- "Trend (Tau):"
+    
+    txt <- if(is.na(val)) "No Data" else paste(round(val, 3))
     div(style = "background-color: #3c8dbc; color: white; padding: 10px; border-radius: 5px; margin-top: 10px; text-align: center;",
         h5(label, style="margin:0 0 5px; font-weight:bold;"), h4(txt, style="margin:0; font-weight:bold;"))
   })
@@ -588,16 +588,9 @@ server <- function(input, output, session) {
       val <- extracted_value_smart()
       coords$map_label <- if(!is.na(val)) paste(round(val, 1), "mm") else "No Data"
       
-      # --- UPDATED SINGLE YEAR OVERLAY ---
       tm <- tm + tm_shape(vect(coords, geom = c("lon", "lat"), crs = "EPSG:4326")) +
         tm_symbols(col = "red", size = 1.0, shape = 21, border.col = "white", border.lwd = 2) +
-        tm_text("map_label", 
-                size = 1.4,             # Larger Text
-                col = "black", 
-                bg.color = "white", 
-                bg.alpha = 1.0,         # Fully Opaque Background
-                ymod = 1.1, 
-                fontface = "bold")
+        tm_text("map_label", size = 1.4, col = "black", bg.color = "white", bg.alpha = 1.0, ymod = 1.1, fontface = "bold")
     }
     tm
   })
@@ -607,34 +600,17 @@ server <- function(input, output, session) {
     content = function(file) { writeRaster(current_raster_data()$r, file, overwrite = TRUE) }
   )
   
-  # ============================================================================
-  # MULTI-YEAR ANALYSIS LOGIC
-  # ============================================================================
-  
-  # --- Subtab 1: Raster Visualization Data ---
+  # --- Multi-Year Analysis Logic ---
   multi_year_stack <- eventReactive(input$run_multi_raster, {
-    # Using NEW input IDs from the "Visualization" subtab
     req(input$vis_start_year, input$vis_end_year, input$multi_time_scale)
-    
     cfg <- current_config()
     year_seq <- input$vis_start_year:input$vis_end_year
     scale <- input$multi_time_scale
-    
     target_months <- NULL
-    label_suffix <- ""
     
-    if (scale == "Annual") {
-      target_months <- 1:12
-      label_suffix <- "Annual"
-    } else if (scale == "Seasonal") {
-      req(input$multi_season_select)
-      target_months <- cfg$seasons[[input$multi_season_select]]
-      label_suffix <- input$multi_season_select
-    } else if (scale == "Monthly") {
-      req(input$multi_month)
-      target_months <- which(month.name == input$multi_month)
-      label_suffix <- input$multi_month
-    }
+    if (scale == "Annual") target_months <- 1:12
+    else if (scale == "Seasonal") { req(input$multi_season_select); target_months <- cfg$seasons[[input$multi_season_select]] }
+    else if (scale == "Monthly") { req(input$multi_month); target_months <- which(month.name == input$multi_month) }
     
     stack_list <- list()
     withProgress(message = paste("Analyzing", scale, "Rainfall..."), value = 0, {
@@ -643,17 +619,14 @@ server <- function(input, output, session) {
         incProgress(1/length(year_seq), detail = paste("Processing:", yr))
         query <- "SELECT file_data FROM raster_storage WHERE country = $1 AND year = $2"
         res <- dbGetQuery(db_pool, query, params = list(tolower(input$country), yr))
-        
         if(nrow(res) > 0) {
           tmp <- tempfile(fileext = ".nc")
           writeBin(res$file_data[[1]], tmp)
           r_daily_yr <- rast(tmp)
           if(crs(r_daily_yr) == "") crs(r_daily_yr) <- "EPSG:4326"
-          
           dates <- seq(as.Date(paste0(yr, "-01-01")), by = "day", length.out = nlyr(r_daily_yr))
           months_idx <- as.numeric(format(dates, "%m"))
           relevant_layers_idx <- which(months_idx %in% target_months)
-          
           if(length(relevant_layers_idx) > 0) {
             r_subset <- r_daily_yr[[relevant_layers_idx]]
             r_sum <- sum(r_subset, na.rm = TRUE)
@@ -667,31 +640,40 @@ server <- function(input, output, session) {
     rast(stack_list)
   })
   
-  # --- Subtab 2: Climate Indices Data ---
+  output$multi_year_raster_plot <- renderPlot({
+    req(multi_year_stack())
+    data_stack <- multi_year_stack()
+    tmap_mode("plot")
+    scale <- input$multi_time_scale
+    suffix <- if(scale=="Seasonal") input$multi_season_select else if(scale=="Monthly") input$multi_month else "Annual"
+    
+    tm <- tm_shape(data_stack) +
+      tm_raster(style = "cont", palette = "YlGnBu", title = paste(suffix, "(mm)")) +
+      tm_facets(ncol = 3, free.scales = FALSE) + 
+      tm_layout(main.title = paste(input$country, "-", suffix, "Rainfall"), main.title.position = "center", legend.outside = TRUE, frame = FALSE)
+    
+    if (input$btn_get_value > 0 && input$multi_year_subtabs == "Raster Visualization") {
+      tm <- tm + generate_point_overlay(data_stack)
+    }
+    tm
+  })
+  
   output$multi_index_params <- renderUI({
     req(input$multi_index_type)
     idx <- input$multi_index_type
-    if (idx == "RxDday") {
-      numericInput("multi_rolling_window", "Rolling Window (days):", value = 5, min = 1, max = 10)
-    } else if (idx %in% c("PRCPTOT", "CDD","Rnnmm","CWD")) {
-      numericInput("multi_threshold", "Threshold (mm):", value = 1, min = 0, max = 200)
-    } else if (idx %in% c("R95p", "R99p", "R95pTOT", "R99pTOT")) {
-      tagList(
-        numericInput("multi_threshold", "Wet Day Threshold (mm):", value = 1, min = 0),
-        numericInput("multi_percentile_val", "Percentile (0-1):", 
-                     value = if(grepl("99", idx)) 0.99 else 0.95, min = 0, max = 1, step = 0.01)
-      )
+    if (idx == "RxDday") numericInput("multi_rolling_window", "Rolling Window (days):", value = 5, min = 1, max = 10)
+    else if (idx %in% c("PRCPTOT", "CDD","Rnnmm","CWD")) numericInput("multi_threshold", "Threshold (mm):", value = 1, min = 0, max = 200)
+    else if (idx %in% c("R95p", "R99p", "R95pTOT", "R99pTOT")) {
+      tagList(numericInput("multi_threshold", "Wet Day Threshold (mm):", value = 1, min = 0),
+              numericInput("multi_percentile_val", "Percentile (0-1):", value = if(grepl("99", idx)) 0.99 else 0.95, min = 0, max = 1, step = 0.01))
     }
   })
   
   multi_year_index_stack <- eventReactive(input$run_multi_index, {
-    # Using NEW input IDs from the "Indices" subtab
     req(input$idx_start_year, input$idx_end_year, input$multi_index_type)
-    
     year_seq <- input$idx_start_year:input$idx_end_year
     idx_type <- input$multi_index_type
     cfg <- current_config()
-    
     thresh <- if(!is.null(input$multi_threshold)) as.numeric(input$multi_threshold) else 1
     win <- if(!is.null(input$multi_rolling_window)) as.numeric(input$multi_rolling_window) else 5
     pct_val <- if(!is.null(input$multi_percentile_val)) as.numeric(input$multi_percentile_val) else 0.95
@@ -701,7 +683,6 @@ server <- function(input, output, session) {
       for(i in seq_along(year_seq)) {
         yr <- year_seq[i]
         incProgress(1/length(year_seq), detail = paste("Year:", yr))
-        
         query <- "SELECT file_data FROM raster_storage WHERE country = $1 AND year = $2"
         res <- dbGetQuery(db_pool, query, params = list(tolower(input$country), yr))
         if(nrow(res) > 0) {
@@ -709,7 +690,6 @@ server <- function(input, output, session) {
           writeBin(res$file_data[[1]], tmp)
           r_daily_yr <- rast(tmp)
           if(crs(r_daily_yr) == "") crs(r_daily_yr) <- "EPSG:4326"
-          
           r_idx <- calculate_index_logic(r_daily_yr, idx_type, thresh, win, pct_val, input$country, cfg$year_range)
           if(!is.null(r_idx)) {
             names(r_idx) <- as.character(yr)
@@ -722,38 +702,14 @@ server <- function(input, output, session) {
     rast(stack_list)
   })
   
-  # --- Render Plot: Raster Visualization ---
-  output$multi_year_raster_plot <- renderPlot({
-    req(multi_year_stack())
-    data_stack <- multi_year_stack()
-    tmap_mode("plot")
-    scale <- input$multi_time_scale
-    suffix <- if(scale=="Seasonal") input$multi_season_select else if(scale=="Monthly") input$multi_month else "Annual"
-    
-    tm <- tm_shape(data_stack) +
-      tm_raster(style = "cont", palette = "YlGnBu", title = paste(suffix, "(mm)")) +
-      tm_facets(ncol = 3, free.scales = FALSE) + 
-      tm_layout(main.title = paste(input$country, "-", suffix, "Rainfall"), 
-                main.title.position = "center", legend.outside = TRUE, frame = FALSE)
-    
-    if (input$btn_get_value > 0 && input$multi_year_subtabs == "Raster Visualization") {
-      tm <- tm + generate_point_overlay(data_stack)
-    }
-    tm
-  })
-  
-  # --- Render Plot: Climate Indices ---
   output$multi_year_index_plot <- renderPlot({
     req(multi_year_index_stack())
     data_stack <- multi_year_index_stack()
     tmap_mode("plot")
     pal <- if(input$multi_index_type == "CDD") "YlOrRd" else "YlGnBu"
-    
-    tm <- tm_shape(data_stack) +
-      tm_raster(style = "cont", palette = pal, title = input$multi_index_type) +
+    tm <- tm_shape(data_stack) + tm_raster(style = "cont", palette = pal, title = input$multi_index_type) +
       tm_facets(ncol = 3, free.scales = FALSE) + 
-      tm_layout(main.title = paste("Multi-Year Trend:", input$multi_index_type), 
-                main.title.position = "center", legend.outside = TRUE, frame = FALSE)
+      tm_layout(main.title = paste("Multi-Year Trend:", input$multi_index_type), main.title.position = "center", legend.outside = TRUE, frame = FALSE)
     
     if (input$btn_get_value > 0 && input$multi_year_subtabs == "Climate Indices") {
       tm <- tm + generate_point_overlay(data_stack)
@@ -761,12 +717,10 @@ server <- function(input, output, session) {
     tm
   })
   
-  # --- Helper: Generate Point Overlay (UPDATED FOR CLARITY) ---
   generate_point_overlay <- function(data_stack) {
     coords <- selected_point_coords() 
     pt_vect <- vect(coords, geom = c("lon", "lat"), crs = "EPSG:4326")
     extracted_vals <- terra::extract(data_stack, pt_vect)
-    
     pt_list <- list()
     for(yr in names(data_stack)) {
       val <- extracted_vals[[yr]]
@@ -775,34 +729,19 @@ server <- function(input, output, session) {
     }
     pt_data <- do.call(rbind, pt_list)
     pt_sf <- vect(pt_data, geom=c("lon", "lat"), crs="EPSG:4326")
-    
-    tm_shape(pt_sf) +
-      # Clear Red Dot
-      tm_symbols(col = "red", size = 0.8, shape = 21, border.col = "white", border.lwd = 1.5) + 
-      # High Contrast Text Label
-      tm_text("display_val", 
-              size = 1.3,           # Larger
-              col = "black", 
-              bg.color = "white", 
-              bg.alpha = 1.0,       # Opaque Background
-              ymod = 1.1, 
-              fontface = "bold") + 
+    tm_shape(pt_sf) + tm_symbols(col = "red", size = 0.8, shape = 21, border.col = "white", border.lwd = 1.5) + 
+      tm_text("display_val", size = 1.3, col = "black", bg.color = "white", bg.alpha = 1.0, ymod = 1.1, fontface = "bold") + 
       tm_facets(by = "year_match")
   }
   
-  # ============================================================================
-  # SINGLE YEAR INDICES LOGIC (Existing - Now using Helper)
-  # ============================================================================
   output$index_parameters <- renderUI({
     req(input$climate_index)
     idx <- input$climate_index
     if (idx == "RxDday") numericInput("rolling_window", "Rolling Window (days):", value = 5, min = 1, max = 10)
     else if (idx %in% c("PRCPTOT", "CDD","Rnnmm","CWD")) numericInput("threshold", "Threshold (mm):", value = 1, min = 0, max = 200)
     else if (idx %in% c("R95p", "R99p", "R95pTOT", "R99pTOT")) {
-      tagList(
-        numericInput("threshold", "Wet Day Threshold (mm):", value = 1, min = 0),
-        numericInput("percentile_val", "Percentile (0-1):", value = if(grepl("99", idx)) 0.99 else 0.95, min = 0, max = 1, step = 0.01)
-      )
+      tagList(numericInput("threshold", "Wet Day Threshold (mm):", value = 1, min = 0),
+              numericInput("percentile_val", "Percentile (0-1):", value = if(grepl("99", idx)) 0.99 else 0.95, min = 0, max = 1, step = 0.01))
     }
   })
   
@@ -896,33 +835,20 @@ server <- function(input, output, session) {
       label_txt <- if(!is.na(val)) paste(round(val, 2)) else "No Data"
       coords$map_label <- label_txt
       
-      # --- UPDATED SINGLE YEAR INDEX OVERLAY ---
       tm <- tm + tm_shape(vect(coords, geom = c("lon", "lat"), crs = "EPSG:4326")) +
         tm_symbols(col = "red", size = 1.0, shape = 21, border.col = "white", border.lwd = 2) +
-        tm_text("map_label", 
-                size = 1.4,             # Larger Text
-                col = "black", 
-                bg.color = "white", 
-                bg.alpha = 1.0,         # Opaque Background
-                ymod = 1.1, 
-                fontface = "bold")
+        tm_text("map_label", size = 1.4, col = "black", bg.color = "white", bg.alpha = 1.0, ymod = 1.1, fontface = "bold")
     }
     tm
   })
   
-  
   # --- Trend Analysis Reactive ---
   trend_stack_result <- eventReactive(input$run_trend, {
     req(input$trend_start_year, input$trend_end_year)
-    
-    # Validation
     validate(need((input$trend_end_year - input$trend_start_year) >= 2, "Need at least 3 years of data to calculate a trend."))
-    
     cfg <- current_config()
     year_seq <- input$trend_start_year:input$trend_end_year
     scale <- input$trend_time_scale
-    
-    # Determine target months
     target_months <- 1:12
     if (scale == "Seasonal") {
       req(input$trend_season_select)
@@ -932,28 +858,21 @@ server <- function(input, output, session) {
       target_months <- which(month.name == input$trend_month)
     }
     
-    # 1. Fetch Time Series Stack (Sequential & Inline)
     ts_stack_list <- list()
-    
     withProgress(message = "Fetching Time Series...", value = 0, {
       for(i in seq_along(year_seq)) {
         yr <- year_seq[i]
         incProgress(0.5/length(year_seq), detail = paste("Fetching:", yr))
-        
-        # --- INLINE FETCHING LOGIC START ---
         query <- "SELECT file_data FROM raster_storage WHERE country = $1 AND year = $2"
         res <- dbGetQuery(db_pool, query, params = list(tolower(input$country), yr))
-        
         if(nrow(res) > 0) {
           tmp <- tempfile(fileext = ".nc")
           writeBin(res$file_data[[1]], tmp)
           r_daily_yr <- rast(tmp)
           if(crs(r_daily_yr) == "") crs(r_daily_yr) <- "EPSG:4326"
-          
           dates <- seq(as.Date(paste0(yr, "-01-01")), by = "day", length.out = nlyr(r_daily_yr))
           months_idx <- as.numeric(format(dates, "%m"))
           relevant_layers_idx <- which(months_idx %in% target_months)
-          
           if(length(relevant_layers_idx) > 0) {
             r_subset <- r_daily_yr[[relevant_layers_idx]]
             r_sum <- sum(r_subset, na.rm = TRUE)
@@ -961,40 +880,44 @@ server <- function(input, output, session) {
             ts_stack_list[[as.character(yr)]] <- r_sum
           }
         }
-        # --- INLINE FETCHING LOGIC END ---
       }
     })
     
     validate(need(length(ts_stack_list) > 2, "Insufficient data found for the selected period."))
     full_ts_stack <- rast(ts_stack_list)
     
-    # 2. Calculate Mann-Kendall Trend
     withProgress(message = "Calculating Trends...", value = 0.6, {
       result <- calculate_mk_trend_logic(full_ts_stack)
     })
-    
     return(result)
   })
   
   output$trend_map <- renderTmap({
-    # 1. Ensure data is ready
     req(trend_stack_result())
-    
-    # 2. VITAL FIX: Only render if the user is actually on the Trend tab.
-    # This prevents the map from drawing into a hidden (0-pixel) container.
     req(input$multi_year_subtabs == "Trend Analysis")
     
     res_stack <- trend_stack_result()
     view_layer <- downsample_for_map(res_stack[["Tau"]])
     
-    # 3. Visualization Logic (Fixed 'breaks' error)
-    tm_shape(view_layer) +
+    tm <- tm_shape(view_layer) +
       tm_raster(col.scale = tm_scale_continuous(values = "-brewer.rd_bu", midpoint = 0), 
                 col.legend = tm_legend(title = "Trend Strength (Tau)", position = tm_pos_in("right", "bottom"))) +
       tm_title(paste("Mann-Kendall Trend:", input$trend_start_year, "-", input$trend_end_year)) +
       tm_layout(frame = FALSE)
+    
+    # --- ADDED: Point Overlay for Trend Tab ---
+    if (input$btn_get_value > 0) {
+      coords <- selected_point_coords()
+      val <- extracted_value_smart() # Uses the updated logic to extract from trend result
+      label_txt <- if(!is.na(val)) paste("Tau:", round(val, 3)) else "No Data"
+      coords$map_label <- label_txt
+      
+      tm <- tm + tm_shape(vect(coords, geom = c("lon", "lat"), crs = "EPSG:4326")) +
+        tm_symbols(col = "red", size = 1.0, shape = 21, border.col = "white", border.lwd = 2) +
+        tm_text("map_label", size = 1.4, col = "black", bg.color = "white", bg.alpha = 1.0, ymod = 1.1, fontface = "bold")
+    }
+    tm
   })
-  
   
   output$download_index <- downloadHandler(
     filename = function() { 
@@ -1008,8 +931,6 @@ server <- function(input, output, session) {
       writeRaster(to_save, file, overwrite = TRUE)
     }
   )
-  
-
 }
 
 shinyApp(ui, server)
