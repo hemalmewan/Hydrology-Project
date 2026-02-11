@@ -85,7 +85,7 @@ for(country in countries){
   }
 }
 
-##disconnect the databse connection
+##disconnect the database connection
 dbDisconnect(con)
 ##prompt massage 
 print("Upload process completed!!!!!!!!!!!")
@@ -93,7 +93,7 @@ print("Upload process completed!!!!!!!!!!!")
 
 query<-"SELECT file_data FROM raster_storage WHERE year=$1"
 result<-dbGetQuery(con,query,params=list(1952))
-result$file_data[[1]]
+result
 
 
 

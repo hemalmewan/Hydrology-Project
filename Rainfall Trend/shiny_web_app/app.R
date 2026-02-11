@@ -8,6 +8,9 @@ library(DBI)
 library(RPostgres)
 library(pool)
 library(Kendall)
+library(geodata)
+library(trend)
+library(ggplot2)
 
 # ==============================================================================
 # DATABASE CONNECTION
@@ -45,7 +48,7 @@ country_config <- list(
     year_range  = c(1981, 2024),
     default_loc = list(lat = 7.9, lon = -1.0),
     seasons     = list(
-      "Dry Season" = c(1, 2, 12, 11),
+      "Dry Season" = c(1, 2, 11),
       "Wet Season" = c(3, 4, 5, 6, 7, 9, 10)
     )
   ),
@@ -54,36 +57,41 @@ country_config <- list(
     year_range  = c(1981, 2024),
     default_loc = list(lat = 9.1, lon = 40.4),
     seasons     = list(
-      "Bega (Dry)"           = c(12, 1),
+      "Bega (Dry)"            = c(12, 1),
       "Belg (Short Rains)"  = c(3, 4, 5),
       "Kiremt (Long Rains)" = c(6, 7, 8)
     )
   )
 )
 
-# --- Trend Calculation Helper ---
+# --- Trend Calculation Helper (Updated for Sen's Slope) ---
 calculate_mk_trend_logic <- function(ts_stack) {
   # Define the function to run on every single pixel
   mk_pixel_fun <- function(x) {
-    # If any data is missing in the time series, return NA
-    if (any(is.na(x))) return(c(NA, NA)) 
+    if(any(is.na(x))) return(c(NA, NA, NA))
     
-    # Run Mann-Kendall Test
     tryCatch({
+      # 1. Calculate Mann-Kendall Tau (Strength)
       mk <- Kendall::MannKendall(x)
-      return(c(mk$tau[1], mk$sl[1])) # Return Tau and P-value
-    }, error = function(e) return(c(NA, NA)))
+      tau_val <- mk$tau[1]
+      
+      # 2. Calculate Sen's Slope (Magnitude/Intensity)
+      ss <- trend::sens.slope(x)
+      slope_val <- as.numeric(ss$estimates)
+      p_val <- as.numeric(ss$p.value)
+      
+      return(c(tau_val, slope_val, p_val))
+    }, error = function(e) return(c(NA, NA, NA)))
   }
   
-  # Apply function to the raster stack using C++ optimization
+  # Apply function to the raster stack
+  # We expect 3 output layers: Tau, Slope, and P_Value
   trend_result <- terra::app(ts_stack, mk_pixel_fun)
-  names(trend_result) <- c("Tau", "P_Value")
+  names(trend_result) <- c("Tau", "Slope", "P_Value")
   return(trend_result)
 }
 
-
 # --- Downsampling Helper ---
-# PREVENTS CRASHES: Reduces resolution for display only if the raster is too big
 downsample_for_map <- function(r) {
   if (ncell(r) > 500000) {
     fact <- floor(sqrt(ncell(r) / 500000))
@@ -94,16 +102,13 @@ downsample_for_map <- function(r) {
   return(r)
 }
 
-
-
-
 tmap_mode("view") 
 
 # ==============================================================================
 # UI
 # ==============================================================================
 ui <- dashboardPage(
-  dashboardHeader(title = "Multi-Country Rainfall"),
+  dashboardHeader(title = "Climate Trend Analysis"),
   
   dashboardSidebar(
     sidebarMenu(id = "tabs", 
@@ -118,11 +123,13 @@ ui <- dashboardPage(
     selectInput("country", "Select Country:",
                 choices = names(country_config), 
                 selected = "India"),
+    selectInput("region", "Select Region (Optional):", 
+                choices = c("Whole Country"),
+                selected = "Whole Country"),
     
     hr(),
     
     # --- SINGLE YEAR / VIEWER CONTROLS ---
-    # Kept in sidebar only for the "Viewer" tabs, hidden for Multi-Year
     conditionalPanel(
       condition = "input.tabs !== 'multi_year'",
       numericInput("year", "Enter Year:", value = 1951, min = 1951, max = 2007)
@@ -167,26 +174,40 @@ ui <- dashboardPage(
   ),
   
   dashboardBody(
-    tags$head(tags$style(HTML("
-      .box { box-shadow: 0 1px 3px rgba(0,0,0,0.1); border-top: 3px solid #3c8dbc; }
-      .well { background-color: #f7f7f7; border: 1px solid #e3e3e3; box-shadow: none; }
-      .nav-tabs-custom { box-shadow: none; }
-    "))),
+    tags$head(
+      tags$link(rel ="shortcut icon", href ="rainfall_trend.png"),
+      tags$style(HTML("
+        .box { box-shadow: 0 1px 3px rgba(0,0,0,0.1); border-top: 3px solid #3c8dbc; }
+        .well { background-color: #f7f7f7; border: 1px solid #e3e3e3; box-shadow: none; }
+        .nav-tabs-custom { box-shadow: none; }
+      "))
+    ),
     
     tabItems(
       #---- TAB 1: Raster Viewer ----
       tabItem(
         tabName = "raster",
-        fluidRow(
-          box(width = 12, title = "Rainfall Map", solidHeader = FALSE,
-              tmapOutput("map", height = "800px"),
-              hr(), 
-              downloadButton("download_raster_map", "Download Current Map (.tif)", class = "btn-primary")
-          )
+        div(class = "outer",
+            tmapOutput("map", height = "800px"),
+            
+            absolutePanel(
+              id = "controls", class = "panel panel-default", fixed = TRUE,
+              draggable = TRUE, top = 80, right = 20, left = "auto", bottom = "auto",
+              width = 350, height = "auto",
+              style = "background-color: white; opacity: 0.9; padding: 10px; z-index: 1000; border-radius: 5px; box-shadow: 0 0 10px rgba(0,0,0,0.3);",
+              
+              h4("Regional Insights", style = "border-bottom: 1px solid #ccc; padding-bottom: 5px;"),
+              h5(textOutput("hover_region_name"), style = "color: #3c8dbc; font-weight: bold;"),
+              plotOutput("mini_trend_plot", height = "150px"),
+              plotOutput("mini_hist_plot", height = "150px"),
+              tags$small("Click on a region on the map to view stats.", style = "color: #777;"),
+              hr(),
+              downloadButton("download_raster_map", "Download Map", class = "btn-primary btn-sm", style="width:100%;")
+            )
         )
       ),
       
-      #---- TAB 2: Climate Indices (Single Year) ----
+      #---- TAB 2: Climate Indices ----
       tabItem(
         tabName = "climate_indice",
         fluidRow(
@@ -210,7 +231,7 @@ ui <- dashboardPage(
         )
       ),
       
-      #---- TAB 3: Multi-Year Analysis (REDESIGNED) ----
+      #---- TAB 3: Multi-Year Analysis ----
       tabItem(tabName = "multi_year",
               fluidRow(
                 box(
@@ -219,14 +240,12 @@ ui <- dashboardPage(
                   status = "primary", 
                   solidHeader = TRUE,
                   
-                  # The Tabset Panel mimicking the "Climpact" tabs
                   tabsetPanel(id = "multi_year_subtabs", type = "tabs",
                               
                               # --- SUBTAB 1: Raster Visualization ---
                               tabPanel("Raster Visualization", icon = icon("globe"),
                                        br(),
                                        fluidRow(
-                                         # LEFT COLUMN: INPUTS (The "Sidebar" inside the tab)
                                          column(width = 3,
                                                 wellPanel(
                                                   h4("Configuration", style = "margin-top:0; border-bottom:1px solid #ddd; padding-bottom:5px;"),
@@ -236,8 +255,6 @@ ui <- dashboardPage(
                                                   selectInput("multi_time_scale", "Time Scale:", 
                                                               choices = c("Annual", "Seasonal", "Monthly"), 
                                                               selected = "Annual"),
-                                                  
-                                                  # Dynamic inputs based on scale
                                                   conditionalPanel(
                                                     condition = "input.multi_time_scale == 'Seasonal'",
                                                     uiOutput("ui_multi_season")
@@ -248,11 +265,12 @@ ui <- dashboardPage(
                                                   ),
                                                   br(),
                                                   actionButton("run_multi_raster", "Generate Maps", icon = icon("play"), 
-                                                               class = "btn-primary", width = "100%")
+                                                               class = "btn-primary", width = "100%"),
+                                                  br(), br(),
+                                                  downloadButton("download_multi_stack", "Download Multi-Year TIF", 
+                                                                 class = "btn-success", style = "width: 100%;")
                                                 )
                                          ),
-                                         
-                                         # RIGHT COLUMN: VISUALIZATION
                                          column(width = 9,
                                                 plotOutput("multi_year_raster_plot", height = "750px")
                                          )
@@ -263,7 +281,6 @@ ui <- dashboardPage(
                               tabPanel("Climate Indices", icon = icon("chart-line"),
                                        br(),
                                        fluidRow(
-                                         # LEFT COLUMN: INPUTS
                                          column(width = 3,
                                                 wellPanel(
                                                   h4("Settings", style = "margin-top:0; border-bottom:1px solid #ddd; padding-bottom:5px;"),
@@ -273,72 +290,58 @@ ui <- dashboardPage(
                                                   selectInput("multi_index_type", "Climate Index:",
                                                               choices = c("PRCPTOT", "CDD", "RxDday", "Rnnmm", "CWD", 
                                                                           "R95p", "R99p", "R95pTOT", "R99pTOT")),
-                                                  
-                                                  # Dynamic Parameters for Index
                                                   uiOutput("multi_index_params"),
                                                   br(),
                                                   actionButton("run_multi_index", "Compute Indices", icon = icon("cogs"), 
                                                                class = "btn-success", width = "100%")
                                                 )
                                          ),
-                                         
-                                         # RIGHT COLUMN: VISUALIZATION
                                          column(width = 9,
                                                 plotOutput("multi_year_index_plot", height = "750px")
                                          )
                                        )
                               ),
-                              # --- SUBTAB 3: Trend Analysis (NEW) ---
+                              
+                              # --- SUBTAB 3: Trend Analysis (UPDATED UI) ---
                               tabPanel("Trend Analysis", icon = icon("chart-area"), 
                                        br(),
                                        fluidRow(
-                                         # --- Left Control Panel ---
                                          column(width = 3,
-                                                wellPanel(style = "background: #ffffff; border-top: 3px solid #f39c12;", # Custom styled card
-                                                          
-                                                          # 1. Header
+                                                wellPanel(style = "background: #ffffff; border-top: 3px solid #f39c12;",
                                                           h4("Trend Settings", style = "border-bottom: 1px solid #eee; padding-bottom: 10px; margin-top: 0;"),
-                                                          
-                                                          # 2. Time Range Inputs (Unique IDs: trend_*)
                                                           numericInput("trend_start_year", "Start Year:", value = 1951, min = 1951, max = 2007),
                                                           numericInput("trend_end_year", "End Year:", value = 2007, min = 1951, max = 2007),
-                                                          
                                                           hr(),
-                                                          
-                                                          # 3. Granularity Selection
                                                           selectInput("trend_time_scale", "Analysis Scale:", 
                                                                       choices = c("Annual", "Seasonal", "Monthly"), 
                                                                       selected = "Annual"),
-                                                          
-                                                          # 4. Conditional Inputs (Only show when relevant)
                                                           conditionalPanel(
                                                             condition = "input.trend_time_scale == 'Seasonal'",
-                                                            uiOutput("ui_trend_season") # Need to create this in server
+                                                            uiOutput("ui_trend_season")
                                                           ),
                                                           conditionalPanel(
                                                             condition = "input.trend_time_scale == 'Monthly'",
                                                             selectInput("trend_month", "Select Month:", choices = month.name)
                                                           ),
-                                                          
                                                           br(),
-                                                          
-                                                          # 5. Calculation Button (Styled Orange for distinction)
                                                           actionButton("run_trend", "Calculate Mann-Kendall", 
                                                                        icon = icon("calculator"), 
-                                                                       class = "btn-warning", # Orange color
+                                                                       class = "btn-warning", 
                                                                        style = "width: 100%; font-weight: bold; color: white;")
                                                 )
                                          ),
-                                         
-                                         # --- Right Map Panel ---
                                          column(width = 9,
-                                                box(width = 12, title = "Spatial Trend (Tau)", status = "warning", solidHeader = FALSE,
-                                                    tmapOutput("trend_map", height = "750px")
+                                                # --- NEW: Regional Summary Box ---
+                                                box(width = 12, title = "Regional Trend Summary", status = "primary", solidHeader = TRUE,
+                                                    verbatimTextOutput("regional_mk_stats")
+                                                ),
+                                                # ---------------------------------
+                                                box(width = 12, title = "Spatial Trend (Sen's Slope)", status = "warning", solidHeader = FALSE,
+                                                    tmapOutput("trend_map", height = "600px")
                                                 )
                                          )
                                        )
                               )
-                              
                   )
                 )
               )
@@ -349,8 +352,26 @@ ui <- dashboardPage(
 
 server <- function(input, output, session) {
   
+  # --- Helper Function: Safe Regional Cropping ---
+  apply_region_mask <- function(r_stack, region_name, map_obj) {
+    if (!is.null(region_name) && region_name != "Whole Country") {
+      if (is.null(map_obj) || !(region_name %in% map_obj$NAME_1)) {
+        return(r_stack) 
+      }
+      selected_poly <- map_obj[map_obj$NAME_1 == region_name, ]
+      if (nrow(selected_poly) > 0) {
+        if (crs(r_stack) != "") {
+          selected_poly <- project(selected_poly, crs(r_stack))
+        }
+        r_cropped <- crop(r_stack, selected_poly, mask = TRUE)
+        return(r_cropped)
+      }
+    }
+    return(r_stack)
+  }
+  
   # --- Helper Function: Index Calculation Logic ---
-  calculate_index_logic <- function(stack_in, idx_type, thresh, win, pct_val, country, year_range) {
+  calculate_index_logic <- function(stack_in, idx_type, thresh, win, pct_val, country, year_range, region_name, map_obj) {
     if (idx_type == "PRCPTOT") { return(app(stack_in, function(x) sum(x[x >= thresh], na.rm=TRUE))) }
     else if (idx_type == "Rnnmm") { return(app(stack_in, function(x) sum(x > thresh, na.rm=TRUE))) }
     else if (idx_type == "CDD") { 
@@ -385,6 +406,9 @@ server <- function(input, output, session) {
           writeBin(res$file_data[[1]], tmp)
           r_base_yr <- rast(tmp)
           if(crs(r_base_yr) == "") crs(r_base_yr) <- "EPSG:4326"
+          
+          r_base_yr <- apply_region_mask(r_base_yr, region_name, map_obj)
+          
           baseline_stack_list[[length(baseline_stack_list)+1]] <- r_base_yr
         }
       }
@@ -418,17 +442,13 @@ server <- function(input, output, session) {
   observeEvent(input$country, {
     req(current_config())
     cfg <- current_config()
-    
     updateNumericInput(session, "year", value = cfg$year_range[1], min = cfg$year_range[1], max = cfg$year_range[2])
     updateNumericInput(session, "sidebar_lat", value = cfg$default_loc[["lat"]])
     updateNumericInput(session, "sidebar_lon", value = cfg$default_loc[["lon"]])
-    
     updateNumericInput(session, "vis_start_year", value = cfg$year_range[1], min = cfg$year_range[1], max = cfg$year_range[2])
     updateNumericInput(session, "vis_end_year", value = min(cfg$year_range[1]+5, cfg$year_range[2]), min = cfg$year_range[1], max = cfg$year_range[2])
-    
     updateNumericInput(session, "idx_start_year", value = cfg$year_range[1], min = cfg$year_range[1], max = cfg$year_range[2])
     updateNumericInput(session, "idx_end_year", value = min(cfg$year_range[1]+5, cfg$year_range[2]), min = cfg$year_range[1], max = cfg$year_range[2])
-    
     updateNumericInput(session, "trend_start_year", value = cfg$year_range[1], min = cfg$year_range[1], max = cfg$year_range[2])
     updateNumericInput(session, "trend_end_year", value = cfg$year_range[2], min = cfg$year_range[1], max = cfg$year_range[2])
   })
@@ -439,14 +459,25 @@ server <- function(input, output, session) {
     selectInput("multi_season_select", "Select Season:", choices = names(cfg$seasons))
   })
   
-  # --- ADDED: UI Output for Trend Season Selection ---
   output$ui_trend_season <- renderUI({
     req(current_config())
     cfg <- current_config()
     selectInput("trend_season_select", "Select Season:", choices = names(cfg$seasons))
   })
   
-  # --- Data Loading (Standard Viewer) ---
+  # --- Regional Map Logic ---
+  region_map <- reactive({
+    req(input$country)
+    iso_code <- switch(input$country, "India"="IND", "Ghana"="GHA", "Ethiopia"="ETH")
+    gadm(country=iso_code, level=1, path=tempdir())
+  })
+  
+  observeEvent(region_map(), {
+    region_names <- sort(region_map()$NAME_1)
+    updateSelectInput(session, "region", choices = c("Whole Country", region_names), selected = "Whole Country")
+  })
+  
+  # --- Data Loading ---
   r_daily <- reactive({
     req(input$country, input$year)
     country_key <- tolower(input$country)
@@ -457,9 +488,10 @@ server <- function(input, output, session) {
     raw_data <- result$file_data[[1]]
     tmp_nc <- tempfile(fileext = ".nc")
     writeBin(raw_data, tmp_nc)
-    r <- rast(tmp_nc)
-    if(crs(r) == "") crs(r) <- "EPSG:4326"
-    return(r)
+    r_full <- rast(tmp_nc)
+    if(crs(r_full) == "") crs(r_full) <- "EPSG:4326"
+    r_final <- apply_region_mask(r_full, input$region, region_map())
+    return(r_final)
   })
   
   daily_dates <- reactive({
@@ -481,7 +513,7 @@ server <- function(input, output, session) {
     } else return(NULL)
   })
   
-  # --- Raster Viewer Logic (Tab 1) ---
+  # --- Raster Viewer Logic ---
   current_raster_data <- reactive({
     req(r_daily(), daily_dates(), input$viewType)
     r <- r_daily()
@@ -496,14 +528,12 @@ server <- function(input, output, session) {
     } else if (input$viewType == "daily") {
       req(input$selected_day)
       idx <- which(dates == as.Date(input$selected_day))
-      validate(need(length(idx) > 0, "Date not found"))
       r_out <- r[[idx]]
       title_txt <- paste("Daily -", input$selected_day)
       file_name <- paste0("Daily_", input$selected_day)
     } else if (input$viewType == "monthly") {
       req(input$selected_month)
       idx <- which(format(dates, "%B") == input$selected_month)
-      validate(need(length(idx) > 0, "Month not found"))
       r_out <- sum(r[[idx]], na.rm=TRUE)
       title_txt <- paste("Monthly -", input$selected_month, input$year)
       file_name <- paste0("Monthly_", input$selected_month, "_", input$year)
@@ -512,7 +542,6 @@ server <- function(input, output, session) {
       months <- as.numeric(format(dates, "%m"))
       target <- cfg$seasons[[input$selected_season]]
       idx <- which(months %in% target)
-      validate(need(length(idx) > 0, "Season not found"))
       r_out <- sum(r[[idx]], na.rm=TRUE)
       title_txt <- paste(input$selected_season, "-", input$year)
       file_name <- paste0("Season_", input$selected_season, "_", input$year)
@@ -551,7 +580,8 @@ server <- function(input, output, session) {
         target_raster <- multi_year_index_stack()[[nlyr(multi_year_index_stack())]]
       } else if (input$multi_year_subtabs == "Trend Analysis") {
         req(trend_stack_result())
-        target_raster <- trend_stack_result()[["Tau"]] # Extract from Tau layer for Trend
+        trend_res <- trend_stack_result()
+        target_raster <- trend_res$map[["Slope"]] 
       }
     }
     if(is.null(target_raster)) return(NA)
@@ -565,23 +595,28 @@ server <- function(input, output, session) {
     req(input$btn_get_value)
     val <- extracted_value_smart()
     
-    # Dynamic Label Logic
     label <- "Value:"
     if(input$tabs == "climate_indice") label <- "Index Value:"
     else if(input$tabs == "raster") label <- "Precipitation:"
-    else if(input$tabs == "multi_year" && input$multi_year_subtabs == "Trend Analysis") label <- "Trend (Tau):"
+    else if(input$tabs == "multi_year" && input$multi_year_subtabs == "Trend Analysis") label <- "Sen's Slope:"
     
     txt <- if(is.na(val)) "No Data" else paste(round(val, 3))
     div(style = "background-color: #3c8dbc; color: white; padding: 10px; border-radius: 5px; margin-top: 10px; text-align: center;",
         h5(label, style="margin:0 0 5px; font-weight:bold;"), h4(txt, style="margin:0; font-weight:bold;"))
   })
   
+  # --- MAP RENDER (Raster Viewer) ---
   output$map <- renderTmap({
     data <- current_raster_data()
     req(data$r)
     r_show <- terra::disagg(data$r, fact = 5, method = "bilinear")
     tm <- tm_shape(r_show) + tm_raster(title = "Precip (mm)", palette = "Blues", style = "cont", alpha = 0.8) +
       tm_layout(main.title = data$title, main.title.position = "center", frame = FALSE)
+    
+    if(!is.null(region_map())) {
+      tm <- tm + tm_shape(region_map()) + 
+        tm_polygons(id = "NAME_1", alpha = 0, border.col = "black", border.alpha = 0.3, lwd = 1) 
+    }
     
     if (input$btn_get_value > 0 && input$tabs == "raster") {
       coords <- selected_point_coords()
@@ -593,6 +628,112 @@ server <- function(input, output, session) {
         tm_text("map_label", size = 1.4, col = "black", bg.color = "white", bg.alpha = 1.0, ymod = 1.1, fontface = "bold")
     }
     tm
+  })
+  
+  # ============================================================================
+  # RASTER VIEWER CLICK EVENT
+  # ============================================================================
+  
+  selected_region_data <- reactiveValues(
+    name = NULL, 
+    monthly = NULL, 
+    subset_data = NULL, 
+    active_months = NULL,
+    month_names_string = "" 
+  )
+  
+  observeEvent(input$map_shape_click, {
+    click_data <- input$map_shape_click
+    
+    if (!is.null(click_data$id)) {
+      reg_name <- click_data$id
+      selected_region_data$name <- reg_name
+      
+      cfg <- country_config[[input$country]]
+      target_months <- 1:12 
+      
+      if (input$viewType == "seasonal" && !is.null(input$selected_season)) {
+        target_months <- cfg$seasons[[input$selected_season]]
+      } else if (input$viewType == "monthly" && !is.null(input$selected_month)) {
+        target_months <- match(input$selected_month, month.name)
+      }
+      
+      selected_region_data$active_months <- target_months
+      month_names <- month.abb[target_months]
+      selected_region_data$month_names_string <- paste(month_names, collapse = ", ")
+      
+      req(input$country, input$year)
+      country_key <- tolower(input$country)
+      year_val <- input$year
+      query <- "SELECT file_data FROM raster_storage WHERE country = $1 AND year = $2"
+      res <- dbGetQuery(db_pool, query, params = list(country_key, year_val))
+      
+      if(nrow(res) > 0) {
+        raw_data <- res$file_data[[1]]
+        tmp_nc <- tempfile(fileext = ".nc")
+        writeBin(raw_data, tmp_nc)
+        r_full_temp <- rast(tmp_nc)
+        if(crs(r_full_temp) == "") crs(r_full_temp) <- "EPSG:4326"
+        
+        r_cropped <- apply_region_mask(r_full_temp, reg_name, region_map())
+        dates <- seq(as.Date(paste0(input$year, "-01-01")), by = "day", length.out = nlyr(r_full_temp))
+        months_idx <- as.numeric(format(dates, "%m"))
+        r_monthly <- terra::tapp(r_cropped, index = months_idx, fun = sum, na.rm = TRUE)
+        selected_region_data$monthly <- r_monthly
+        
+        relevant_layers_idx <- which(months_idx %in% target_months)
+        if(length(relevant_layers_idx) > 0){
+          r_seasonal_subset <- r_cropped[[relevant_layers_idx]]
+          selected_region_data$subset_data <- sum(r_seasonal_subset, na.rm = TRUE)
+        } else {
+          selected_region_data$subset_data <- NULL
+        }
+      }
+    }
+  })
+  
+  output$hover_region_name <- renderText({
+    if(is.null(selected_region_data$name)) "Select a Region" else selected_region_data$name
+  })
+  
+  output$mini_trend_plot <- renderPlot({
+    req(selected_region_data$monthly, selected_region_data$active_months)
+    monthly_means <- terra::global(selected_region_data$monthly, "mean", na.rm = TRUE)
+    df_plot <- data.frame(
+      MonthIdx = 1:12,
+      Month = factor(month.abb, levels = month.abb), 
+      Precip = monthly_means$mean
+    )
+    df_filtered <- df_plot[df_plot$MonthIdx %in% selected_region_data$active_months, ]
+    
+    ggplot(df_filtered, aes(x = Month, y = Precip, group = 1)) +
+      geom_line(color = "#d9534f", size = 1) + 
+      geom_point(color = "#d9534f", size = 3) + 
+      geom_area(fill = "#d9534f", alpha = 0.2) + 
+      theme_void() + 
+      labs(title = paste0("Trend: ", input$viewType),
+           subtitle = selected_region_data$month_names_string) +
+      theme(
+        plot.title = element_text(size = 10, face = "bold", hjust = 0.5),
+        plot.subtitle = element_text(size = 8, color = "#666", hjust = 0.5),
+        axis.text.x = element_text(size = 9, color = "black", angle = 0)
+      )
+  })
+  
+  output$mini_hist_plot <- renderPlot({
+    req(selected_region_data$subset_data)
+    val_vec <- terra::values(selected_region_data$subset_data, mat = FALSE)
+    val_vec <- val_vec[!is.na(val_vec)]
+    df_hist <- data.frame(Precip = val_vec)
+    ggplot(df_hist, aes(x = Precip)) +
+      geom_histogram(fill = "#3c8dbc", bins = 20) +
+      theme_void() +
+      labs(title = "Rainfall Distribution",
+           subtitle = paste0("Total for: ", selected_region_data$month_names_string)) +
+      theme(
+        plot.title = element_text(size = 10, face = "bold", hjust = 0.5),
+        plot.subtitle = element_text(size = 8, color = "#666", hjust = 0.5)
+      )
   })
   
   output$download_raster_map <- downloadHandler(
@@ -624,6 +765,9 @@ server <- function(input, output, session) {
           writeBin(res$file_data[[1]], tmp)
           r_daily_yr <- rast(tmp)
           if(crs(r_daily_yr) == "") crs(r_daily_yr) <- "EPSG:4326"
+          
+          r_daily_yr <- apply_region_mask(r_daily_yr, input$region, region_map())
+          
           dates <- seq(as.Date(paste0(yr, "-01-01")), by = "day", length.out = nlyr(r_daily_yr))
           months_idx <- as.numeric(format(dates, "%m"))
           relevant_layers_idx <- which(months_idx %in% target_months)
@@ -637,7 +781,8 @@ server <- function(input, output, session) {
       }
     })
     validate(need(length(stack_list) > 0, "No data found."))
-    rast(stack_list)
+    final_stack <- rast(stack_list)
+    return(final_stack) 
   })
   
   output$multi_year_raster_plot <- renderPlot({
@@ -657,6 +802,21 @@ server <- function(input, output, session) {
     }
     tm
   })
+  
+  output$download_multi_stack <- downloadHandler(
+    filename = function() {
+      region_tag <- if(input$region != "Whole Country") paste0("_", gsub(" ", "", input$region)) else ""
+      paste0(input$country, region_tag, "_", input$vis_start_year, "-", input$vis_end_year, ".tif")
+    },
+    content = function(file) {
+      req(multi_year_stack())
+      stack_to_save <- multi_year_stack()
+      if(input$region != "Whole Country"){
+        stack_to_save <- apply_region_mask(stack_to_save, input$region, region_map())
+      }
+      writeRaster(stack_to_save, file, overwrite = TRUE)
+    }
+  )
   
   output$multi_index_params <- renderUI({
     req(input$multi_index_type)
@@ -690,7 +850,12 @@ server <- function(input, output, session) {
           writeBin(res$file_data[[1]], tmp)
           r_daily_yr <- rast(tmp)
           if(crs(r_daily_yr) == "") crs(r_daily_yr) <- "EPSG:4326"
-          r_idx <- calculate_index_logic(r_daily_yr, idx_type, thresh, win, pct_val, input$country, cfg$year_range)
+          
+          r_daily_yr <- apply_region_mask(r_daily_yr, input$region, region_map())
+          
+          r_idx <- calculate_index_logic(r_daily_yr, idx_type, thresh, win, pct_val, 
+                                         input$country, cfg$year_range,
+                                         input$region, region_map())
           if(!is.null(r_idx)) {
             names(r_idx) <- as.character(yr)
             stack_list[[as.character(yr)]] <- r_idx
@@ -699,7 +864,8 @@ server <- function(input, output, session) {
       }
     })
     validate(need(length(stack_list) > 0, "No data could be calculated."))
-    rast(stack_list)
+    final_stack <- rast(stack_list)
+    return(final_stack) 
   })
   
   output$multi_year_index_plot <- renderPlot({
@@ -716,23 +882,6 @@ server <- function(input, output, session) {
     }
     tm
   })
-  
-  generate_point_overlay <- function(data_stack) {
-    coords <- selected_point_coords() 
-    pt_vect <- vect(coords, geom = c("lon", "lat"), crs = "EPSG:4326")
-    extracted_vals <- terra::extract(data_stack, pt_vect)
-    pt_list <- list()
-    for(yr in names(data_stack)) {
-      val <- extracted_vals[[yr]]
-      label_txt <- if(is.na(val)) "NA" else paste(round(val, 1))
-      pt_list[[yr]] <- data.frame(lon = coords$lon, lat = coords$lat, year_match = yr, display_val = label_txt)
-    }
-    pt_data <- do.call(rbind, pt_list)
-    pt_sf <- vect(pt_data, geom=c("lon", "lat"), crs="EPSG:4326")
-    tm_shape(pt_sf) + tm_symbols(col = "red", size = 0.8, shape = 21, border.col = "white", border.lwd = 1.5) + 
-      tm_text("display_val", size = 1.3, col = "black", bg.color = "white", bg.alpha = 1.0, ymod = 1.1, fontface = "bold") + 
-      tm_facets(by = "year_match")
-  }
   
   output$index_parameters <- renderUI({
     req(input$climate_index)
@@ -787,7 +936,9 @@ server <- function(input, output, session) {
     
     withProgress(message = "Calculating Indices...", value = 0, {
       if (scale == "annual") {
-        res <- calculate_index_logic(r, idx_type, thresh, win, pct_val, input$country, cfg$year_range)
+        res <- calculate_index_logic(r, idx_type, thresh, win, pct_val, 
+                                     input$country, cfg$year_range, 
+                                     input$region, region_map())
         names(res) <- paste(idx_type, "Annual", input$year)
         return(res)
       } else {
@@ -799,7 +950,9 @@ server <- function(input, output, session) {
           idx_m <- which(months == m)
           if(length(idx_m) > 0) {
             r_sub <- r[[idx_m]]
-            res_m <- calculate_index_logic(r_sub, idx_type, thresh, win, pct_val, input$country, cfg$year_range)
+            res_m <- calculate_index_logic(r_sub, idx_type, thresh, win, pct_val, 
+                                           input$country, cfg$year_range,
+                                           input$region, region_map())
             names(res_m) <- month.name[m]
             monthly_stack[[month.name[m]]] <- res_m
           }
@@ -809,6 +962,7 @@ server <- function(input, output, session) {
     })
   })
   
+  # --- UPDATED: Index Map (With Clickable Regions) ---
   output$index_map <- renderTmap({
     req(indices_calculate())
     data <- indices_calculate()
@@ -825,9 +979,16 @@ server <- function(input, output, session) {
     }
     r_show <- terra::disagg(r_show, fact = 5, method = "bilinear")
     pal <- if(input$climate_index %in% c("CDD")) "YlOrRd" else "YlGnBu"
+    
     tm <- tm_shape(r_show) +
       tm_raster(title = "Index Value", palette = pal, style = "cont", alpha = 0.8) +
       tm_layout(main.title = title_txt, main.title.position = "center", frame = FALSE)
+    
+    # --- ADD REGION OVERLAY ---
+    if(!is.null(region_map())) {
+      tm <- tm + tm_shape(region_map()) + 
+        tm_polygons(id = "NAME_1", alpha = 0, border.col = "black", border.alpha = 0.3, lwd = 1) 
+    }
     
     if (input$btn_get_value > 0 && input$tabs == "climate_indice") {
       coords <- selected_point_coords()
@@ -870,6 +1031,10 @@ server <- function(input, output, session) {
           writeBin(res$file_data[[1]], tmp)
           r_daily_yr <- rast(tmp)
           if(crs(r_daily_yr) == "") crs(r_daily_yr) <- "EPSG:4326"
+          
+          # --- FIX: Apply Regional Crop here ---
+          r_daily_yr <- apply_region_mask(r_daily_yr, input$region, region_map())
+          
           dates <- seq(as.Date(paste0(yr, "-01-01")), by = "day", length.out = nlyr(r_daily_yr))
           months_idx <- as.numeric(format(dates, "%m"))
           relevant_layers_idx <- which(months_idx %in% target_months)
@@ -886,30 +1051,61 @@ server <- function(input, output, session) {
     validate(need(length(ts_stack_list) > 2, "Insufficient data found for the selected period."))
     full_ts_stack <- rast(ts_stack_list)
     
+    # Redundant but safe final crop
+    full_ts_stack <- apply_region_mask(full_ts_stack, input$region, region_map())
+    
     withProgress(message = "Calculating Trends...", value = 0.6, {
-      result <- calculate_mk_trend_logic(full_ts_stack)
+      # --- CALCULATION 1: PIXEL-WISE MAP ---
+      map_result <- calculate_mk_trend_logic(full_ts_stack)
+      
+      # --- CALCULATION 2: REGIONAL MANN-KENDALL ---
+      regional_means <- terra::global(full_ts_stack, "mean", na.rm = TRUE)$mean
+      mk_stat <- Kendall::MannKendall(regional_means)
+      ss_stat <- trend::sens.slope(regional_means)
+      
+      regional_stats <- list(
+        tau = mk_stat$tau[1],
+        p_value = mk_stat$sl[1],
+        slope = ss_stat$estimates,
+        mean_val = mean(regional_means, na.rm=TRUE)
+      )
     })
-    return(result)
+    return(list(map = map_result, region = regional_stats))
   })
   
+  # --- UPDATED: Trend Map (With Clickable Regions) ---
   output$trend_map <- renderTmap({
     req(trend_stack_result())
     req(input$multi_year_subtabs == "Trend Analysis")
     
-    res_stack <- trend_stack_result()
-    view_layer <- downsample_for_map(res_stack[["Tau"]])
+    res_stack <- trend_stack_result()$map
+    view_layer <- downsample_for_map(res_stack[["Slope"]])
     
     tm <- tm_shape(view_layer) +
-      tm_raster(col.scale = tm_scale_continuous(values = "-brewer.rd_bu", midpoint = 0), 
-                col.legend = tm_legend(title = "Trend Strength (Tau)", position = tm_pos_in("right", "bottom"))) +
-      tm_title(paste("Mann-Kendall Trend:", input$trend_start_year, "-", input$trend_end_year)) +
+      tm_raster(col.scale = tm_scale_continuous(values = "RdYlBu", midpoint = 0), 
+                col.legend = tm_legend(title = "Sen's Slope(mm/year)", position = tm_pos_in("right", "bottom"))) +
+      tm_title(paste("Trend Intensity (Slope):", input$trend_start_year, "-", input$trend_end_year)) +
       tm_layout(frame = FALSE)
     
-    # --- ADDED: Point Overlay for Trend Tab ---
+    # --- ADD REGION OVERLAY ---
+    if(!is.null(region_map())) {
+      tm <- tm + tm_shape(region_map()) + 
+        tm_polygons(id = "NAME_1", alpha = 0, border.col = "black", border.alpha = 0.3, lwd = 1) 
+    }
+    
     if (input$btn_get_value > 0) {
       coords <- selected_point_coords()
-      val <- extracted_value_smart() # Uses the updated logic to extract from trend result
-      label_txt <- if(!is.na(val)) paste("Tau:", round(val, 3)) else "No Data"
+      pt_vect <- vect(coords, geom = c("lon", "lat"), crs = "EPSG:4326")
+      val_df <- terra::extract(res_stack, pt_vect)
+      
+      slope_val <- val_df$Slope
+      pval_val  <- val_df$P_Value
+      
+      label_txt <- if(!is.na(slope_val)) {
+        paste0("Slope: ", round(slope_val, 3), "\n(p: ", round(pval_val, 3), ")")
+      } else { 
+        "No Data" 
+      }
       coords$map_label <- label_txt
       
       tm <- tm + tm_shape(vect(coords, geom = c("lon", "lat"), crs = "EPSG:4326")) +
@@ -917,6 +1113,35 @@ server <- function(input, output, session) {
         tm_text("map_label", size = 1.4, col = "black", bg.color = "white", bg.alpha = 1.0, ymod = 1.1, fontface = "bold")
     }
     tm
+  })
+  
+  # --- NEW: Observers to Sync Map Clicks to Sidebar Region ---
+  observeEvent(input$index_map_shape_click, {
+    click <- input$index_map_shape_click
+    if(!is.null(click$id)) updateSelectInput(session, "region", selected = click$id)
+  })
+  
+  observeEvent(input$trend_map_shape_click, {
+    click <- input$trend_map_shape_click
+    if(!is.null(click$id)) updateSelectInput(session, "region", selected = click$id)
+  })
+  
+  output$regional_mk_stats <- renderText({
+    req(trend_stack_result())
+    stats <- trend_stack_result()$region
+    
+    sig_text <- if(stats$p_value < 0.05) "SIGNIFICANT" else "NOT Significant"
+    trend_dir <- if(stats$slope > 0) "INCREASING" else "DECREASING"
+    
+    paste0(
+      "Region Analysis: ", input$region, "\n",
+      "--------------------------------------------------\n",
+      "Overall Trend:    ", trend_dir, " (", sig_text, ")\n",
+      "Sen's Slope:      ", round(stats$slope, 3), " mm/year\n",
+      "Mann-Kendall Tau: ", round(stats$tau, 3), "\n",
+      "P-Value:          ", format.pval(stats$p_value, digits=4), "\n",
+      "Average Rainfall: ", round(stats$mean_val, 1), " mm"
+    )
   })
   
   output$download_index <- downloadHandler(
@@ -932,5 +1157,4 @@ server <- function(input, output, session) {
     }
   )
 }
-
 shinyApp(ui, server)
